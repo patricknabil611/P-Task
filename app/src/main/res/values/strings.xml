@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">P Task</string>
+    <string name="widget_description">Quick view of upcoming and active P Task todos</string>
+    <string name="sign_in_with_google">Sign in with Google</string>
+    <string name="notification_channel_name">Task Reminders &amp; Deadlines</string>
+    <string name="notification_channel_desc">Notifications for due tasks and scheduled reminders</string>
+</resources>

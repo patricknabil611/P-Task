@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<resources>
+    <string name="firestore_database_id" translatable="false">ai-studio-android-omnitask-f424f25b-6743-4728-b7de-6824bd606fcd</string>
+    <string name="recaptcha_site_key" translatable="false">6LeB4QouAAAAAM93rI13jvmooR3Yc75xAnxSDgj6</string>
+</resources>

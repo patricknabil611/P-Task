@@ -1,0 +1,72 @@
+{
+  "entities": {
+    "TodoList": {
+      "title": "TodoList",
+      "description": "A customized task list entity such as Personal, Togo, El sha2a, Travel, or Buy",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The UID of the owner" },
+        "title": { "type": "string", "description": "Display name of the list" },
+        "description": { "type": "string", "description": "Optional short description" },
+        "category": { "type": "string", "description": "Category for grouping lists" },
+        "icon": { "type": "string", "description": "Icon key name" },
+        "colorHex": { "type": "string", "description": "Accent color in hex" },
+        "isPinned": { "type": "boolean", "description": "Whether list is pinned at top" },
+        "isLocked": { "type": "boolean", "description": "Whether list requires biometric unlock" },
+        "orderIndex": { "type": "integer", "description": "Display order index" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp via serverTimestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp via serverTimestamp" }
+      },
+      "required": ["userId", "title", "category", "icon", "colorHex", "isPinned", "isLocked", "orderIndex", "createdAt", "updatedAt"]
+    },
+    "TaskItem": {
+      "title": "TaskItem",
+      "description": "An individual todo task item belonging to a list",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The UID of the task owner" },
+        "listId": { "type": "string", "description": "The ID of the parent TodoList" },
+        "title": { "type": "string", "description": "Task title or description" },
+        "notes": { "type": "string", "description": "Detailed notes or checklist details" },
+        "isCompleted": { "type": "boolean", "description": "Completion status" },
+        "priority": { "type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "URGENT"], "description": "Task priority level" },
+        "dueDateEpoch": { "type": "integer", "description": "Due date in epoch milliseconds or 0 if none" },
+        "reminderEpoch": { "type": "integer", "description": "Reminder time in epoch milliseconds or 0 if none" },
+        "reminderSound": { "type": "string", "description": "Custom notification sound identifier" },
+        "category": { "type": "string", "description": "Category tag" },
+        "completedAt": { "type": "integer", "description": "Completion timestamp in epoch milliseconds" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp via serverTimestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp via serverTimestamp" }
+      },
+      "required": ["userId", "listId", "title", "notes", "isCompleted", "priority", "dueDateEpoch", "reminderEpoch", "reminderSound", "category", "createdAt", "updatedAt"]
+    },
+    "UserSettings": {
+      "title": "UserSettings",
+      "description": "User preference settings including theme, security and categories",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The UID of the user" },
+        "themeMode": { "type": "string", "enum": ["SYSTEM", "LIGHT", "DARK"], "description": "Theme mode" },
+        "biometricLockEnabled": { "type": "boolean", "description": "Biometric protection enabled toggle" },
+        "defaultSound": { "type": "string", "description": "Default reminder sound" },
+        "categories": { "type": "array", "items": { "type": "string" }, "description": "Ordered user category names" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp via serverTimestamp" }
+      },
+      "required": ["userId", "themeMode", "biometricLockEnabled", "defaultSound", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/lists/{listId}": {
+      "schema": "TodoList",
+      "description": "User custom lists"
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": "TaskItem",
+      "description": "User tasks"
+    },
+    "/users/{userId}/settings/{settingId}": {
+      "schema": "UserSettings",
+      "description": "User preferences"
+    }
+  }
+}

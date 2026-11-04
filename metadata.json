@@ -1,0 +1,8 @@
+{
+  "name": "P Task",
+  "description": "Smart all-in-one todo lists with cloud sync, biometric security, custom categories, voice input, reminders, and widgets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

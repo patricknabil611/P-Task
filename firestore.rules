@@ -1,0 +1,127 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny all access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidTodoList(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 100 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 50 &&
+             data.icon is string && data.icon.size() >= 1 && data.icon.size() <= 50 &&
+             data.colorHex is string && data.colorHex.size() >= 4 && data.colorHex.size() <= 16 &&
+             data.isPinned is bool &&
+             data.isLocked is bool &&
+             data.orderIndex is int &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidTaskItem(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.listId is string && data.listId.size() >= 1 && data.listId.size() <= 128 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             data.notes is string && data.notes.size() <= 2000 &&
+             data.isCompleted is bool &&
+             data.priority in ['LOW', 'MEDIUM', 'HIGH', 'URGENT'] &&
+             data.dueDateEpoch is int &&
+             data.reminderEpoch is int &&
+             data.reminderSound is string && data.reminderSound.size() <= 50 &&
+             data.category is string && data.category.size() <= 50 &&
+             (!('completedAt' in data) || data.completedAt is int) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidUserSettings(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.themeMode in ['SYSTEM', 'LIGHT', 'DARK'] &&
+             data.biometricLockEnabled is bool &&
+             data.defaultSound is string && data.defaultSound.size() <= 50 &&
+             (!('categories' in data) || (data.categories is list && data.categories.size() <= 30)) &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    match /users/{userId} {
+      // User lists subcollection
+      match /lists/{listId} {
+        allow get, list: if isSignedIn() && request.auth.uid == userId;
+
+        allow create: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(listId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll(['userId', 'title', 'category', 'icon', 'colorHex', 'isPinned', 'isLocked', 'orderIndex', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'title', 'description', 'category', 'icon', 'colorHex', 'isPinned', 'isLocked', 'orderIndex', 'createdAt', 'updatedAt']) &&
+                         isValidTodoList(incoming());
+
+        allow update: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(listId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTodoList(incoming()) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'category', 'icon', 'colorHex', 'isPinned', 'isLocked', 'orderIndex', 'updatedAt']);
+
+        allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(listId);
+      }
+
+      // User tasks subcollection
+      match /tasks/{taskId} {
+        allow get, list: if isSignedIn() && request.auth.uid == userId;
+
+        allow create: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(taskId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().keys().hasAll(['userId', 'listId', 'title', 'notes', 'isCompleted', 'priority', 'dueDateEpoch', 'reminderEpoch', 'reminderSound', 'category', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'listId', 'title', 'notes', 'isCompleted', 'priority', 'dueDateEpoch', 'reminderEpoch', 'reminderSound', 'category', 'completedAt', 'createdAt', 'updatedAt']) &&
+                         isValidTaskItem(incoming());
+
+        allow update: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(taskId) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         isValidTaskItem(incoming()) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['listId', 'title', 'notes', 'isCompleted', 'priority', 'dueDateEpoch', 'reminderEpoch', 'reminderSound', 'category', 'completedAt', 'updatedAt']);
+
+        allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(taskId);
+      }
+
+      // User settings subcollection
+      match /settings/{settingId} {
+        allow get, list: if isSignedIn() && request.auth.uid == userId;
+
+        allow create, update: if isSignedIn() &&
+                                 request.auth.uid == userId &&
+                                 incoming().userId == request.auth.uid &&
+                                 incoming().keys().hasAll(['userId', 'themeMode', 'biometricLockEnabled', 'defaultSound', 'updatedAt']) &&
+                                 incoming().keys().hasOnly(['userId', 'themeMode', 'biometricLockEnabled', 'defaultSound', 'categories', 'updatedAt']) &&
+                                 isValidUserSettings(incoming());
+
+        allow delete: if isSignedIn() && request.auth.uid == userId;
+      }
+    }
+  }
+}
