@@ -29,7 +29,9 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DirectionsRun
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Flight
@@ -94,6 +96,12 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
+import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
+import com.example.data.drive.DriveColorPalette
+import com.example.data.drive.SharedListState
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun DashboardScreen(
@@ -102,6 +110,7 @@ fun DashboardScreen(
     searchQuery: String,
     selectedCategory: String?,
     availableCategories: List<String> = emptyList(),
+    sharedListsMap: Map<String, SharedListState> = emptyMap(),
     onSearchChange: (String) -> Unit,
     onCategoryChange: (String?) -> Unit,
     onSelectList: (TodoList) -> Unit,
@@ -112,7 +121,9 @@ fun DashboardScreen(
     onToggleTask: (TaskItem) -> Unit,
     onEditTask: (TaskItem) -> Unit,
     onOpenVoiceNlp: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onShareList: (TodoList) -> Unit = {},
+    onRefreshDrive: () -> Unit = {}
 ) {
     var isSearchActive by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
@@ -192,6 +203,9 @@ fun DashboardScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onRefreshDrive, modifier = Modifier.testTag("refresh_drive_btn")) {
+                        Icon(imageVector = Icons.Default.Refresh, contentDescription = "Refresh shared lists")
+                    }
                     IconButton(onClick = { isSearchActive = !isSearchActive }) {
                         Icon(imageVector = Icons.Default.Search, contentDescription = "Search tasks")
                     }
@@ -388,9 +402,55 @@ fun DashboardScreen(
                         completedCount = completedCount,
                         progress = progress,
                         onClick = { onSelectList(list) },
+                        onShare = { onShareList(list) },
                         onEdit = { onEditList(list) },
                         onDelete = { onDeleteList(list) }
                     )
+                }
+
+                // Shared with me Section (Google Drive Shared Lists)
+                val sharedStates = sharedListsMap.values.toList()
+                if (sharedStates.isNotEmpty()) {
+                    item {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Group,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "Shared with me (${sharedStates.size})",
+                                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                                )
+                            }
+                        }
+                    }
+
+                    items(sharedStates, key = { "shared_${it.file.id}" }) { state ->
+                        val tasksForList = state.file.tasks.filterNot { it.isDeleted }
+                        val completedCount = tasksForList.count { it.isCompleted }
+                        val totalCount = tasksForList.size
+                        val progress = if (totalCount > 0) completedCount.toFloat() / totalCount.toFloat() else 0f
+                        val todoList = state.file.toTodoList(isReadOnly = state.isReadOnly)
+
+                        SharedTodoListCard(
+                            sharedState = state,
+                            taskCount = totalCount,
+                            completedCount = completedCount,
+                            progress = progress,
+                            onClick = { onSelectList(todoList) },
+                            onShare = { onShareList(todoList) },
+                            onDelete = { onDeleteList(todoList) }
+                        )
+                    }
                 }
 
                 // Section: Today & Upcoming Tasks
@@ -486,6 +546,7 @@ fun TodoListCard(
     completedCount: Int,
     progress: Float,
     onClick: () -> Unit,
+    onShare: () -> Unit = {},
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -586,7 +647,16 @@ fun TodoListCard(
                         onDismissRequest = { menuExpanded = false }
                     ) {
                         DropdownMenuItem(
+                            text = { Text("Share on Google Drive") },
+                            leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onShare()
+                            }
+                        )
+                        DropdownMenuItem(
                             text = { Text("Edit Details") },
+                            leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
                             onClick = {
                                 menuExpanded = false
                                 onEdit()
@@ -594,6 +664,212 @@ fun TodoListCard(
                         )
                         DropdownMenuItem(
                             text = { Text("Delete List", color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                            onClick = {
+                                menuExpanded = false
+                                onDelete()
+                            }
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Progress Indicators
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "$completedCount of $taskCount completed",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "${(progress * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                    color = accentColor
+                )
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(CircleShape),
+                color = accentColor,
+                trackColor = accentColor.copy(alpha = 0.2f),
+                strokeCap = StrokeCap.Round
+            )
+        }
+    }
+}
+
+@Composable
+fun SharedTodoListCard(
+    sharedState: SharedListState,
+    taskCount: Int,
+    completedCount: Int,
+    progress: Float,
+    onClick: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    val accentColor = remember(sharedState.file.colorHex) {
+        try {
+            Color(android.graphics.Color.parseColor(sharedState.file.colorHex))
+        } catch (_: Exception) {
+            Color(0xFF6366F1)
+        }
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .testTag("shared_list_card_${sharedState.file.id}"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // List Icon with accent background
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(accentColor.copy(alpha = 0.18f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = resolveListIcon(sharedState.file.icon),
+                        contentDescription = null,
+                        tint = accentColor,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = sharedState.file.name,
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = "Google Drive Shared List",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        if (sharedState.isReadOnly) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = MaterialTheme.colorScheme.errorContainer
+                            ) {
+                                Text(
+                                    text = "View only",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    fontSize = 9.sp,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    if (sharedState.file.description.isNotBlank()) {
+                        Text(
+                            text = sharedState.file.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    // Members Avatars and Count
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val displayMembers = sharedState.file.members.take(4)
+                        displayMembers.forEach { member ->
+                            val memberColor = DriveColorPalette.parseColor(member.color)
+                            val initial = (member.name.ifBlank { member.email }).firstOrNull()?.uppercaseChar() ?: 'U'
+                            Box(
+                                modifier = Modifier
+                                    .padding(end = 4.dp)
+                                    .size(20.dp)
+                                    .clip(CircleShape)
+                                    .background(memberColor),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = initial.toString(),
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+                        if (sharedState.file.members.size > 4) {
+                            Text(
+                                text = "+${sharedState.file.members.size - 4}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(end = 4.dp)
+                            )
+                        }
+                        Text(
+                            text = "${sharedState.file.members.size} members",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                }
+
+                // Card actions menu
+                Box {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "Shared List Options")
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Open List") },
+                            onClick = {
+                                menuExpanded = false
+                                onClick()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Share / Manage Members") },
+                            leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
+                            onClick = {
+                                menuExpanded = false
+                                onShare()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Delete or Leave List", color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
                             onClick = {
                                 menuExpanded = false
                                 onDelete()

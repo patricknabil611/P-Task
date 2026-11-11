@@ -43,6 +43,10 @@ import com.example.ui.theme.PTaskTheme
 import com.example.ui.viewmodel.TodoViewModel
 import com.example.ui.viewmodel.UiState
 import com.example.ui.voice.VoiceNlpSheet
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import com.example.data.drive.SyncStatus
+import com.example.ui.sharedlist.ShareListDialog
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
@@ -103,6 +107,10 @@ fun PTaskApp(
 
     val listsState by viewModel.listsState.collectAsStateWithLifecycle()
     val allTasksState by viewModel.allTasksState.collectAsStateWithLifecycle()
+    val sharedListsMap by viewModel.sharedListsMap.collectAsStateWithLifecycle()
+    val syncStatusMap by viewModel.syncStatusMap.collectAsStateWithLifecycle()
+    val userAvatarColor by viewModel.userAvatarColor.collectAsStateWithLifecycle()
+    val driveAuthIntent by viewModel.driveAuthIntent.collectAsStateWithLifecycle()
     val settings by viewModel.settingsState.collectAsStateWithLifecycle()
     val selectedListId by viewModel.selectedListId.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
@@ -122,8 +130,25 @@ fun PTaskApp(
     var showListDialog by remember { mutableStateOf(false) }
     var listToEdit by remember { mutableStateOf<TodoList?>(null) }
 
+    var showShareDialog by remember { mutableStateOf(false) }
+    var listToShare by remember { mutableStateOf<TodoList?>(null) }
+
     var showVoiceNlpSheet by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
+
+    // Drive Consent Activity Result Launcher
+    val driveConsentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        viewModel.refreshDriveSharedLists()
+    }
+
+    LaunchedEffect(driveAuthIntent) {
+        driveAuthIntent?.let { intent ->
+            driveConsentLauncher.launch(intent)
+            viewModel.clearDriveAuthIntent()
+        }
+    }
 
     // Snackbar listeners
     LaunchedEffect(snackMessage) {
@@ -179,7 +204,12 @@ fun PTaskApp(
                     val lists = (listsState as? UiState.Success)?.data ?: emptyList()
                     val tasks = (allTasksState as? UiState.Success)?.data ?: emptyList()
 
-                    val currentSelectedList = lists.find { it.id == selectedListId }
+                    val currentSharedState = selectedListId?.let { sharedListsMap[it] }
+                    val currentSelectedList = if (currentSharedState != null) {
+                        currentSharedState.file.toTodoList(isReadOnly = currentSharedState.isReadOnly)
+                    } else {
+                        lists.find { it.id == selectedListId }
+                    }
 
                     if (currentSelectedList != null) {
                         val tasksForList = tasks.filter { it.listId == currentSelectedList.id }
@@ -188,6 +218,10 @@ fun PTaskApp(
                             list = currentSelectedList,
                             tasks = tasksForList,
                             isBiometricUnlocked = isBiometricUnlocked,
+                            sharedFile = currentSharedState?.file,
+                            syncStatus = syncStatusMap[currentSelectedList.id] ?: SyncStatus.SYNCED,
+                            isReadOnly = currentSharedState?.isReadOnly ?: false,
+                            currentUserEmail = Firebase.auth.currentUser?.email.orEmpty(),
                             onBack = { viewModel.selectList(null) },
                             onRequestUnlock = {
                                 BiometricAuthManager.promptBiometric(
@@ -229,7 +263,12 @@ fun PTaskApp(
                             },
                             onDeleteList = { list ->
                                 viewModel.deleteTodoList(list.id, list.title)
-                            }
+                            },
+                            onShareList = {
+                                listToShare = currentSelectedList
+                                showShareDialog = true
+                            },
+                            onRefreshList = { viewModel.refreshDriveSharedLists() }
                         )
                     } else {
                         DashboardScreen(
@@ -238,6 +277,7 @@ fun PTaskApp(
                             searchQuery = searchQuery,
                             selectedCategory = selectedCategory,
                             availableCategories = resolvedCategories,
+                            sharedListsMap = sharedListsMap,
                             onSearchChange = { viewModel.setSearchQuery(it) },
                             onCategoryChange = { viewModel.setCategoryFilter(it) },
                             onSelectList = { list ->
@@ -286,16 +326,29 @@ fun PTaskApp(
                             },
                             onOpenSettings = {
                                 showSettingsSheet = true
+                            },
+                            onShareList = { list ->
+                                listToShare = list
+                                showShareDialog = true
+                            },
+                            onRefreshDrive = {
+                                viewModel.refreshDriveSharedLists()
                             }
                         )
                     }
 
                     // Task Edit / Create Dialog
                     if (showTaskDialog) {
+                        val activeListId = targetListIdForNewTask.ifBlank { currentSelectedList?.id ?: "" }
+                        val activeSharedState = sharedListsMap[activeListId]
+                        val activeSharedTask = activeSharedState?.file?.tasks?.find { it.id == taskToEdit?.id }
+
                         TaskEditDialog(
                             taskToEdit = taskToEdit,
-                            currentListId = targetListIdForNewTask.ifBlank { lists.firstOrNull()?.id ?: "" },
+                            currentListId = activeListId.ifBlank { lists.firstOrNull()?.id ?: "" },
                             availableLists = lists,
+                            sharedTask = activeSharedTask,
+                            isReadOnly = activeSharedState?.isReadOnly ?: false,
                             onDismiss = { showTaskDialog = false },
                             onSaveTask = { task, listTitle ->
                                 if (taskToEdit == null) {
@@ -325,6 +378,40 @@ fun PTaskApp(
                         )
                     }
 
+                    // Share List Dialog
+                    if (showShareDialog && listToShare != null) {
+                        val targetShared = sharedListsMap[listToShare!!.id]
+                        ShareListDialog(
+                            list = listToShare!!,
+                            sharedFile = targetShared?.file,
+                            currentUserEmail = Firebase.auth.currentUser?.email.orEmpty(),
+                            isDriveConnected = true,
+                            onConnectDrive = { viewModel.refreshDriveSharedLists() },
+                            onShareToDrive = {
+                                viewModel.shareListToDrive(listToShare!!) { _, _ -> }
+                            },
+                            onInviteMember = { email, role ->
+                                viewModel.inviteMemberToSharedList(listToShare!!.id, email, role) { _, _ -> }
+                            },
+                            onUpdateRole = { memberEmail, newRole ->
+                                viewModel.updateMemberRole(listToShare!!.id, memberEmail, newRole)
+                            },
+                            onRemoveMember = { memberEmail ->
+                                viewModel.removeMemberFromSharedList(listToShare!!.id, memberEmail)
+                            },
+                            onLeaveList = {
+                                viewModel.leaveSharedList(listToShare!!.id)
+                            },
+                            onDeleteSharedList = {
+                                viewModel.deleteSharedList(listToShare!!.id)
+                            },
+                            onDismiss = {
+                                showShareDialog = false
+                                listToShare = null
+                            }
+                        )
+                    }
+
                     // Voice NLP Sheet
                     if (showVoiceNlpSheet) {
                         VoiceNlpSheet(
@@ -345,8 +432,16 @@ fun PTaskApp(
                     if (showSettingsSheet) {
                         SettingsSheet(
                             currentSettings = settings,
+                            userAvatarColor = userAvatarColor,
+                            isDriveConnected = true,
                             onSaveSettings = { themeMode, biometric, sound ->
                                 viewModel.updateSettings(themeMode, biometric, sound)
+                            },
+                            onSelectUserColor = { hex ->
+                                viewModel.setUserAvatarColor(hex)
+                            },
+                            onConnectDrive = {
+                                viewModel.refreshDriveSharedLists()
                             },
                             onAddCategory = { name, callback ->
                                 viewModel.addCategory(name, callback)

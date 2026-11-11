@@ -60,12 +60,16 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
+import com.example.data.model.SharedTaskItem
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun TaskEditDialog(
     taskToEdit: TaskItem?,
     currentListId: String,
     availableLists: List<TodoList>,
+    sharedTask: SharedTaskItem? = null,
+    isReadOnly: Boolean = false,
     onDismiss: () -> Unit,
     onSaveTask: (TaskItem, String) -> Unit
 ) {
@@ -111,10 +115,52 @@ fun TaskEditDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                if (sharedTask != null) {
+                    androidx.compose.material3.Card(
+                        colors = androidx.compose.material3.CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            if (sharedTask.createdByName.isNotBlank() || sharedTask.createdBy.isNotBlank()) {
+                                Text(
+                                    text = "Created by: ${sharedTask.createdByName.ifBlank { sharedTask.createdBy }}",
+                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                            if (sharedTask.updatedByName.isNotBlank() || sharedTask.updatedBy.isNotBlank()) {
+                                val relTime = when {
+                                    System.currentTimeMillis() - sharedTask.updatedAt < 60_000L -> "just now"
+                                    System.currentTimeMillis() - sharedTask.updatedAt < 3600_000L -> "${(System.currentTimeMillis() - sharedTask.updatedAt) / 60_000L}m ago"
+                                    System.currentTimeMillis() - sharedTask.updatedAt < 86400_000L -> "${(System.currentTimeMillis() - sharedTask.updatedAt) / 3600_000L}h ago"
+                                    else -> SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(sharedTask.updatedAt))
+                                }
+                                Text(
+                                    text = "Last updated by: ${sharedTask.updatedByName.ifBlank { sharedTask.updatedBy }} ($relTime)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (isReadOnly) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "View only – you have viewer permissions on this list",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // Task Title
                 OutlinedTextField(
                     value = title,
-                    onValueChange = { title = it },
+                    onValueChange = { if (!isReadOnly) title = it },
+                    readOnly = isReadOnly,
                     label = { Text("Task Title *") },
                     placeholder = { Text("e.g. Buy fresh milk") },
                     modifier = Modifier
@@ -304,10 +350,10 @@ fun TaskEditDialog(
                         onSaveTask(updated, targetListTitle)
                     }
                 },
-                enabled = title.isNotBlank(),
+                enabled = title.isNotBlank() && !isReadOnly,
                 modifier = Modifier.testTag("save_task_button")
             ) {
-                Text("Save Task")
+                Text(if (isReadOnly) "View Only" else "Save Task")
             }
         },
         dismissButton = {

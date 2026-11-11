@@ -1,18 +1,30 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.content.Intent
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.ai.GeminiTaskParser
 import com.example.ai.ParsedTaskResult
 import com.example.backup.BackupRestoreManager
+import com.example.data.drive.DriveAuthResult
+import com.example.data.drive.DriveColorPalette
+import com.example.data.drive.GoogleDriveAuthHelper
+import com.example.data.drive.SharedListState
+import com.example.data.drive.SharedListSyncManager
+import com.example.data.drive.SyncStatus
+import com.example.data.model.ListMember
+import com.example.data.model.SharedTaskItem
+import com.example.data.model.SharedTodoListFile
 import com.example.data.model.TaskItem
 import com.example.data.model.TodoList
 import com.example.data.model.UserSettings
 import com.example.data.repository.TodoRepository
 import com.example.notification.NotificationHelper
 import com.example.widget.OmniTaskWidgetProvider
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -44,9 +56,34 @@ data class UndoAction(
 class TodoViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = TodoRepository.create(application)
+    val syncManager = SharedListSyncManager(application)
 
     // Map of taskId -> target isCompleted state for instant optimistic UI
     private val _optimisticToggles = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+
+    val sharedListsMap: StateFlow<Map<String, SharedListState>> = syncManager.sharedListsMap
+    val syncStatusMap: StateFlow<Map<String, SyncStatus>> = syncManager.syncStatusMap
+
+    private fun getCurrentUserEmail(): String {
+        return Firebase.auth.currentUser?.email
+            ?: GoogleDriveAuthHelper.getCurrentGoogleAccount(getApplication())?.email
+            ?: "user@example.com"
+    }
+
+    private fun getCurrentUserName(): String {
+        return Firebase.auth.currentUser?.displayName
+            ?: GoogleDriveAuthHelper.getCurrentGoogleAccount(getApplication())?.displayName
+            ?: getCurrentUserEmail().substringBefore("@")
+    }
+
+    private val _userAvatarColor = MutableStateFlow(
+        DriveColorPalette.getUserColor(application, getCurrentUserEmail())
+    )
+    val userAvatarColor: StateFlow<String> = _userAvatarColor.asStateFlow()
+
+    // Intent to prompt user for Google Drive consent if required
+    private val _driveAuthIntent = MutableStateFlow<Intent?>(null)
+    val driveAuthIntent: StateFlow<Intent?> = _driveAuthIntent.asStateFlow()
 
     val listsState: StateFlow<UiState<List<TodoList>>> = repository.observeLists()
         .map<List<TodoList>, UiState<List<TodoList>>> { UiState.Success(it) }
@@ -59,12 +96,18 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
 
     val allTasksState: StateFlow<UiState<List<TaskItem>>> = combine(
         repository.observeTasks(),
+        syncManager.sharedListsMap,
         _optimisticToggles
-    ) { tasks, optimisticMap ->
+    ) { localTasks, sharedMap, optimisticMap ->
+        val sharedTasks = sharedMap.values.flatMap { state ->
+            state.file.tasks.filterNot { it.isDeleted }.map { it.toTaskItem() }
+        }
+        val combinedTasks = localTasks + sharedTasks
+
         val effectiveTasks = if (optimisticMap.isEmpty()) {
-            tasks
+            combinedTasks
         } else {
-            tasks.map { task ->
+            combinedTasks.map { task ->
                 val optCompleted = optimisticMap[task.id]
                 if (optCompleted != null) {
                     val completedAt = if (optCompleted) {
@@ -124,10 +167,59 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
                 Log.e("TodoViewModel", "Error seeding default lists", e)
             }
         }
+
+        // Discover and refresh shared lists on app launch
+        refreshDriveSharedLists()
+    }
+
+    fun clearDriveAuthIntent() {
+        _driveAuthIntent.value = null
+    }
+
+    fun refreshDriveSharedLists(onComplete: () -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                val authRes = GoogleDriveAuthHelper.getAccessToken(getApplication())
+                when (authRes) {
+                    is DriveAuthResult.Success -> {
+                        syncManager.refreshDiscoveredSharedLists(authRes.token, authRes.account.email.orEmpty())
+                        onComplete()
+                    }
+                    is DriveAuthResult.NeedsUserConsent -> {
+                        _driveAuthIntent.value = authRes.intent
+                        onComplete()
+                    }
+                    is DriveAuthResult.NeedsSignIn -> {
+                        _driveAuthIntent.value = authRes.signInIntent
+                        onComplete()
+                    }
+                    is DriveAuthResult.Error -> {
+                        Log.w("TodoViewModel", "Drive not connected: ${authRes.message}")
+                        onComplete()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("TodoViewModel", "Error refreshing shared lists", e)
+                onComplete()
+            }
+        }
     }
 
     fun selectList(listId: String?) {
         _selectedListId.value = listId
+        if (listId != null && sharedListsMap.value.containsKey(listId)) {
+            syncManager.startActivePolling(listId, viewModelScope)
+        } else {
+            syncManager.stopActivePolling()
+        }
+    }
+
+    fun isSharedList(listId: String): Boolean {
+        return sharedListsMap.value.containsKey(listId)
+    }
+
+    fun getSharedListState(listId: String): SharedListState? {
+        return sharedListsMap.value[listId]
     }
 
     fun setSearchQuery(query: String) {
@@ -154,6 +246,126 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
         _undoAction.value = null
     }
 
+    fun setUserAvatarColor(hex: String) {
+        DriveColorPalette.saveUserColor(getApplication(), getCurrentUserEmail(), hex)
+        _userAvatarColor.value = hex
+        showSnack("Personal avatar color updated")
+    }
+
+    // Google Drive Sharing Functions
+    fun shareListToDrive(localList: TodoList, onComplete: (Boolean, String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val authRes = GoogleDriveAuthHelper.getAccessToken(getApplication())
+                if (authRes !is DriveAuthResult.Success) {
+                    when (authRes) {
+                        is DriveAuthResult.NeedsUserConsent -> _driveAuthIntent.value = authRes.intent
+                        is DriveAuthResult.NeedsSignIn -> _driveAuthIntent.value = authRes.signInIntent
+                        is DriveAuthResult.Error -> showSnack(authRes.message)
+                        else -> Unit
+                    }
+                    onComplete(false, "Google Drive authorization required")
+                    return@launch
+                }
+
+                val currentEmail = authRes.account.email.orEmpty().ifBlank { getCurrentUserEmail() }
+                val currentName = authRes.account.displayName.orEmpty().ifBlank { getCurrentUserName() }
+                val currentColor = _userAvatarColor.value
+
+                // Gather existing local tasks for this list
+                val existingTasks = ((allTasksState.value as? UiState.Success)?.data ?: emptyList())
+                    .filter { it.listId == localList.id }
+                    .map { SharedTaskItem.fromTaskItem(it, currentEmail, currentName) }
+
+                val ownerMember = ListMember(
+                    email = currentEmail,
+                    name = currentName,
+                    color = currentColor,
+                    role = "owner"
+                )
+
+                val sharedList = SharedTodoListFile(
+                    id = localList.id,
+                    name = localList.title,
+                    ownerEmail = currentEmail,
+                    ownerName = currentName,
+                    description = localList.description,
+                    category = localList.category,
+                    icon = localList.icon,
+                    colorHex = localList.colorHex,
+                    createdAt = System.currentTimeMillis(),
+                    updatedAt = System.currentTimeMillis(),
+                    members = listOf(ownerMember),
+                    tasks = existingTasks
+                )
+
+                val result = syncManager.createAndUploadSharedList(authRes.token, sharedList, currentEmail)
+                result.onSuccess {
+                    showSnack("List shared to Google Drive!")
+                    onComplete(true, null)
+                }.onFailure {
+                    showSnack("Failed to share list: ${it.message}")
+                    onComplete(false, it.message)
+                }
+            } catch (e: Exception) {
+                showSnack("Error: ${e.message}")
+                onComplete(false, e.message)
+            }
+        }
+    }
+
+    fun inviteMemberToSharedList(listId: String, email: String, role: String, onComplete: (Boolean, String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val res = syncManager.inviteMember(listId, email, role)
+                res.onSuccess {
+                    showSnack("Invited $email to list")
+                    onComplete(true, null)
+                }.onFailure {
+                    showSnack("Invite failed: ${it.message}")
+                    onComplete(false, it.message)
+                }
+            } catch (e: Exception) {
+                showSnack("Error: ${e.message}")
+                onComplete(false, e.message)
+            }
+        }
+    }
+
+    fun updateMemberRole(listId: String, memberEmail: String, newRole: String) {
+        viewModelScope.launch {
+            syncManager.updateMemberRole(listId, memberEmail, newRole)
+            showSnack("Updated role for $memberEmail")
+        }
+    }
+
+    fun removeMemberFromSharedList(listId: String, memberEmail: String) {
+        viewModelScope.launch {
+            syncManager.removeMember(listId, memberEmail)
+            showSnack("Removed $memberEmail from list")
+        }
+    }
+
+    fun leaveSharedList(listId: String) {
+        viewModelScope.launch {
+            syncManager.leaveSharedList(listId, getCurrentUserEmail())
+            if (_selectedListId.value == listId) {
+                _selectedListId.value = null
+            }
+            showSnack("Left shared list")
+        }
+    }
+
+    fun deleteSharedList(listId: String) {
+        viewModelScope.launch {
+            syncManager.deleteSharedListCompletely(listId)
+            if (_selectedListId.value == listId) {
+                _selectedListId.value = null
+            }
+            showSnack("Deleted shared list from Google Drive")
+        }
+    }
+
     fun addTodoList(list: TodoList, onComplete: () -> Unit = {}) {
         viewModelScope.launch {
             try {
@@ -169,7 +381,19 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
     fun updateTodoList(list: TodoList, onComplete: () -> Unit = {}) {
         viewModelScope.launch {
             try {
-                repository.updateTodoList(list)
+                if (isSharedList(list.id)) {
+                    syncManager.saveSharedListChanges(list.id) { file ->
+                        file.copy(
+                            name = list.title,
+                            description = list.description,
+                            category = list.category,
+                            icon = list.icon,
+                            colorHex = list.colorHex
+                        )
+                    }
+                } else {
+                    repository.updateTodoList(list)
+                }
                 showSnack("List updated: ${list.title}")
                 onComplete()
             } catch (e: Exception) {
@@ -181,7 +405,16 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteTodoList(listId: String, listTitle: String) {
         viewModelScope.launch {
             try {
-                repository.deleteTodoList(listId)
+                if (isSharedList(listId)) {
+                    val shared = getSharedListState(listId)?.file
+                    if (shared != null && shared.ownerEmail.equals(getCurrentUserEmail(), ignoreCase = true)) {
+                        syncManager.deleteSharedListCompletely(listId)
+                    } else {
+                        syncManager.leaveSharedList(listId, getCurrentUserEmail())
+                    }
+                } else {
+                    repository.deleteTodoList(listId)
+                }
                 if (_selectedListId.value == listId) {
                     _selectedListId.value = null
                 }
@@ -195,7 +428,39 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
     fun addTask(task: TaskItem, listTitle: String = "P Task", onComplete: () -> Unit = {}) {
         viewModelScope.launch {
             try {
-                val taskId = repository.addTask(task)
+                val listId = task.listId
+                val taskId = if (isSharedList(listId)) {
+                    val currentEmail = getCurrentUserEmail()
+                    val currentName = getCurrentUserName()
+                    val now = System.currentTimeMillis()
+                    val sharedTask = SharedTaskItem(
+                        id = if (task.id.isNotBlank()) task.id else "task_${java.util.UUID.randomUUID()}",
+                        listId = listId,
+                        title = task.title,
+                        notes = task.notes,
+                        isCompleted = task.isCompleted,
+                        priority = task.priority,
+                        dueDateEpoch = task.dueDateEpoch,
+                        reminderEpoch = task.reminderEpoch,
+                        reminderSound = task.reminderSound,
+                        category = task.category,
+                        completedAt = task.completedAt,
+                        createdBy = currentEmail,
+                        createdByName = currentName,
+                        createdAt = now,
+                        updatedBy = currentEmail,
+                        updatedByName = currentName,
+                        updatedAt = now,
+                        isDeleted = false
+                    )
+                    syncManager.saveSharedListChanges(listId) { file ->
+                        file.copy(tasks = file.tasks + sharedTask)
+                    }
+                    sharedTask.id
+                } else {
+                    repository.addTask(task)
+                }
+
                 if (task.reminderEpoch > System.currentTimeMillis()) {
                     NotificationHelper.scheduleReminder(
                         context = getApplication(),
@@ -217,7 +482,36 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
     fun updateTask(task: TaskItem, listTitle: String = "P Task", onComplete: () -> Unit = {}) {
         viewModelScope.launch {
             try {
-                repository.updateTask(task)
+                val listId = task.listId
+                if (isSharedList(listId)) {
+                    val currentEmail = getCurrentUserEmail()
+                    val currentName = getCurrentUserName()
+                    val now = System.currentTimeMillis()
+                    syncManager.saveSharedListChanges(listId) { file ->
+                        val updated = file.tasks.map { existing ->
+                            if (existing.id == task.id) {
+                                existing.copy(
+                                    title = task.title,
+                                    notes = task.notes,
+                                    isCompleted = task.isCompleted,
+                                    priority = task.priority,
+                                    dueDateEpoch = task.dueDateEpoch,
+                                    reminderEpoch = task.reminderEpoch,
+                                    reminderSound = task.reminderSound,
+                                    category = task.category,
+                                    completedAt = task.completedAt,
+                                    updatedBy = currentEmail,
+                                    updatedByName = currentName,
+                                    updatedAt = now
+                                )
+                            } else existing
+                        }
+                        file.copy(tasks = updated)
+                    }
+                } else {
+                    repository.updateTask(task)
+                }
+
                 if (task.reminderEpoch > System.currentTimeMillis() && !task.isCompleted) {
                     NotificationHelper.scheduleReminder(
                         context = getApplication(),
@@ -245,7 +539,31 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
-                repository.toggleTaskCompletion(task)
+                val listId = task.listId
+                if (isSharedList(listId)) {
+                    val currentEmail = getCurrentUserEmail()
+                    val currentName = getCurrentUserName()
+                    val now = System.currentTimeMillis()
+                    val completedAt = if (targetCompleted) now else 0L
+
+                    syncManager.saveSharedListChanges(listId) { file ->
+                        val updatedTasks = file.tasks.map { existing ->
+                            if (existing.id == task.id) {
+                                existing.copy(
+                                    isCompleted = targetCompleted,
+                                    completedAt = completedAt,
+                                    updatedBy = currentEmail,
+                                    updatedByName = currentName,
+                                    updatedAt = now
+                                )
+                            } else existing
+                        }
+                        file.copy(tasks = updatedTasks)
+                    }
+                } else {
+                    repository.toggleTaskCompletion(task)
+                }
+
                 // Remove optimistic override once persisted
                 _optimisticToggles.value = _optimisticToggles.value - task.id
 
@@ -283,7 +601,26 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
     fun clearCompletedTasks(listId: String) {
         viewModelScope.launch {
             try {
-                repository.clearCompletedTasksInList(listId)
+                if (isSharedList(listId)) {
+                    val currentEmail = getCurrentUserEmail()
+                    val currentName = getCurrentUserName()
+                    val now = System.currentTimeMillis()
+                    syncManager.saveSharedListChanges(listId) { file ->
+                        val updated = file.tasks.map { task ->
+                            if (task.isCompleted) {
+                                task.copy(
+                                    isDeleted = true,
+                                    updatedBy = currentEmail,
+                                    updatedByName = currentName,
+                                    updatedAt = now
+                                )
+                            } else task
+                        }
+                        file.copy(tasks = updated)
+                    }
+                } else {
+                    repository.clearCompletedTasksInList(listId)
+                }
                 showSnack("Cleared completed tasks")
             } catch (e: Exception) {
                 showSnack("Error clearing completed: ${e.message}")
@@ -294,7 +631,27 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteTask(task: TaskItem) {
         viewModelScope.launch {
             try {
-                repository.deleteTask(task.id)
+                val listId = task.listId
+                if (isSharedList(listId)) {
+                    val currentEmail = getCurrentUserEmail()
+                    val currentName = getCurrentUserName()
+                    val now = System.currentTimeMillis()
+                    syncManager.saveSharedListChanges(listId) { file ->
+                        val updated = file.tasks.map { existing ->
+                            if (existing.id == task.id) {
+                                existing.copy(
+                                    isDeleted = true,
+                                    updatedBy = currentEmail,
+                                    updatedByName = currentName,
+                                    updatedAt = now
+                                )
+                            } else existing
+                        }
+                        file.copy(tasks = updated)
+                    }
+                } else {
+                    repository.deleteTask(task.id)
+                }
                 NotificationHelper.cancelReminder(getApplication(), task.id)
                 showSnack("Task deleted")
             } catch (e: Exception) {

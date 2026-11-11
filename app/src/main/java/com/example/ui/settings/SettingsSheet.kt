@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
@@ -84,11 +85,19 @@ import com.example.notification.NotificationHelper
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
 
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Palette
+import com.example.data.drive.DriveColorPalette
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsSheet(
     currentSettings: UserSettings?,
+    userAvatarColor: String = "#4F46E5",
+    isDriveConnected: Boolean = true,
     onSaveSettings: (String, Boolean, String) -> Unit,
+    onSelectUserColor: (String) -> Unit = {},
+    onConnectDrive: () -> Unit = {},
     onAddCategory: (String, (Boolean, String?) -> Unit) -> Unit,
     onRenameCategory: (String, String, (Boolean, String?) -> Unit) -> Unit,
     onDeleteCategory: (String, String, (Boolean, String?) -> Unit) -> Unit,
@@ -187,6 +196,89 @@ fun SettingsSheet(
                         Icon(Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("Sign Out")
+                    }
+                }
+            }
+
+            // Google Drive Sharing & Identity Section
+            SettingsSection(title = "Google Drive Sharing & Identity", icon = Icons.Default.Share) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                    ),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        // Drive status row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (isDriveConnected) Icons.Default.CloudDone else Icons.Default.CloudOff,
+                                contentDescription = null,
+                                tint = if (isDriveConnected) androidx.compose.ui.graphics.Color(0xFF10B981) else MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (isDriveConnected) "Google Drive Connected" else "Google Drive Disconnected",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                                )
+                                Text(
+                                    text = if (isDriveConnected) "Shared lists sync automatically with Drive" else "Reconnect account to share lists",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            FilledTonalButton(onClick = onConnectDrive) {
+                                Text(if (isDriveConnected) "Reconnect" else "Connect")
+                            }
+                        }
+
+                        // Avatar color picker
+                        Text(
+                            text = "Collaborator Avatar Color",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                        Text(
+                            text = "Choose your personal avatar color for shared lists. Collaborators will see your updates with this color.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+
+                        FlowRow(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            DriveColorPalette.PALETTE_12.forEach { colorHex ->
+                                val swatchColor = DriveColorPalette.parseColor(colorHex)
+                                val isSelected = colorHex.equals(userAvatarColor, ignoreCase = true)
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(swatchColor)
+                                        .clickable { onSelectUserColor(colorHex) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = "Selected",
+                                            tint = androidx.compose.ui.graphics.Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

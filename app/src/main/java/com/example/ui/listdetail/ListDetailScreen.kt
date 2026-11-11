@@ -52,6 +52,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -85,12 +86,42 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+import android.widget.Toast
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.CloudSync
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.platform.LocalContext
+import com.example.data.drive.DriveColorPalette
+import com.example.data.drive.SyncStatus
+import com.example.data.model.SharedTaskItem
+import com.example.data.model.SharedTodoListFile
+
+private fun formatRelativeTime(epochMillis: Long): String {
+    if (epochMillis <= 0L) return "recently"
+    val diff = System.currentTimeMillis() - epochMillis
+    return when {
+        diff < 60_000L -> "just now"
+        diff < 3600_000L -> "${diff / 60_000L}m ago"
+        diff < 86400_000L -> "${diff / 3600_000L}h ago"
+        diff < 7 * 86400_000L -> "${diff / 86400_000L}d ago"
+        else -> SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(epochMillis))
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ListDetailScreen(
     list: TodoList,
     tasks: List<TaskItem>,
     isBiometricUnlocked: Boolean,
+    sharedFile: SharedTodoListFile? = null,
+    syncStatus: SyncStatus = SyncStatus.SYNCED,
+    isReadOnly: Boolean = false,
+    currentUserEmail: String = "",
     onBack: () -> Unit,
     onRequestUnlock: () -> Unit,
     onAddTask: () -> Unit,
@@ -100,11 +131,15 @@ fun ListDetailScreen(
     onDeleteTask: (TaskItem) -> Unit,
     onClearCompleted: () -> Unit = {},
     onEditList: (TodoList) -> Unit,
-    onDeleteList: (TodoList) -> Unit
+    onDeleteList: (TodoList) -> Unit,
+    onShareList: () -> Unit = {},
+    onRefreshList: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
     var quickTaskText by remember { mutableStateOf("") }
     var filterMode by remember { mutableStateOf("ALL") } // ALL, PENDING, COMPLETED
+    var updaterFilter by remember { mutableStateOf<String?>(null) } // null = All updaters, "ME" = Me, or email
     var showCompletedSection by remember { mutableStateOf(true) }
     var showClearCompletedDialog by remember { mutableStateOf(false) }
 
@@ -116,9 +151,26 @@ fun ListDetailScreen(
         }
     }
 
-    val totalCount = tasks.size
-    val pendingTasks = remember(tasks) { tasks.filter { !it.isCompleted } }
-    val completedTasks = remember(tasks) { tasks.filter { it.isCompleted }.sortedByDescending { it.completedAt } }
+    // Filter tasks by status and updater
+    val filteredTasks = remember(tasks, updaterFilter, sharedFile) {
+        if (updaterFilter == null || sharedFile == null) {
+            tasks
+        } else if (updaterFilter == "ME") {
+            tasks.filter { task ->
+                val st = sharedFile.tasks.find { it.id == task.id }
+                st != null && st.updatedBy.equals(currentUserEmail, ignoreCase = true)
+            }
+        } else {
+            tasks.filter { task ->
+                val st = sharedFile.tasks.find { it.id == task.id }
+                st != null && st.updatedBy.equals(updaterFilter, ignoreCase = true)
+            }
+        }
+    }
+
+    val totalCount = filteredTasks.size
+    val pendingTasks = remember(filteredTasks) { filteredTasks.filter { !it.isCompleted } }
+    val completedTasks = remember(filteredTasks) { filteredTasks.filter { it.isCompleted }.sortedByDescending { it.completedAt } }
     val completedCount = completedTasks.size
     val progress = if (totalCount > 0) completedCount.toFloat() / totalCount.toFloat() else 0f
 
@@ -126,7 +178,10 @@ fun ListDetailScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
                         Box(
                             modifier = Modifier
                                 .size(32.dp)
@@ -142,12 +197,67 @@ fun ListDetailScreen(
                             )
                         }
                         Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = list.title,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = list.title,
+                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                if (sharedFile != null) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Icon(
+                                        imageVector = Icons.Default.Share,
+                                        contentDescription = "Shared List",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+
+                            // Sync status indicator
+                            if (sharedFile != null) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(top = 1.dp)
+                                ) {
+                                    when (syncStatus) {
+                                        SyncStatus.SYNCED -> {
+                                            Icon(Icons.Default.CloudDone, contentDescription = null, tint = Color(0xFF10B981), modifier = Modifier.size(12.dp))
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text("Synced", style = MaterialTheme.typography.labelSmall, color = Color(0xFF10B981), fontSize = 10.sp)
+                                        }
+                                        SyncStatus.SYNCING -> {
+                                            CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp, color = MaterialTheme.colorScheme.primary)
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Syncing…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, fontSize = 10.sp)
+                                        }
+                                        SyncStatus.OFFLINE -> {
+                                            Icon(Icons.Default.CloudOff, contentDescription = null, tint = Color(0xFFF59E0B), modifier = Modifier.size(12.dp))
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Text("Offline – changes will sync later", style = MaterialTheme.typography.labelSmall, color = Color(0xFFF59E0B), fontSize = 10.sp)
+                                        }
+                                        SyncStatus.ACCESS_REVOKED -> {
+                                            Text("You no longer have access to this list", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, fontSize = 10.sp)
+                                        }
+                                        SyncStatus.DELETED_BY_OWNER -> {
+                                            Text("This list was deleted by the owner", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error, fontSize = 10.sp)
+                                        }
+                                        else -> Unit
+                                    }
+                                    if (isReadOnly) {
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = MaterialTheme.colorScheme.errorContainer
+                                        ) {
+                                            Text("View only", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold), color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 9.sp, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 },
                 navigationIcon = {
@@ -156,6 +266,14 @@ fun ListDetailScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onShareList, modifier = Modifier.testTag("detail_share_button")) {
+                        Icon(Icons.Default.Share, contentDescription = "Share on Google Drive")
+                    }
+                    if (sharedFile != null) {
+                        IconButton(onClick = onRefreshList) {
+                            Icon(Icons.Default.Refresh, contentDescription = "Refresh list")
+                        }
+                    }
                     Box {
                         IconButton(onClick = { menuExpanded = true }) {
                             Icon(Icons.Default.MoreVert, contentDescription = "Options")
@@ -165,31 +283,41 @@ fun ListDetailScreen(
                             onDismissRequest = { menuExpanded = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Edit List Details") },
-                                leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                                text = { Text("Share on Google Drive") },
+                                leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
                                 onClick = {
                                     menuExpanded = false
-                                    onEditList(list)
+                                    onShareList()
                                 }
                             )
-                            if (completedTasks.isNotEmpty()) {
+                            if (!isReadOnly) {
                                 DropdownMenuItem(
-                                    text = { Text("Clear Completed Tasks") },
-                                    leadingIcon = { Icon(Icons.Default.DeleteSweep, contentDescription = null) },
+                                    text = { Text("Edit List Details") },
+                                    leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
                                     onClick = {
                                         menuExpanded = false
-                                        showClearCompletedDialog = true
+                                        onEditList(list)
+                                    }
+                                )
+                                if (completedTasks.isNotEmpty()) {
+                                    DropdownMenuItem(
+                                        text = { Text("Clear Completed Tasks") },
+                                        leadingIcon = { Icon(Icons.Default.DeleteSweep, contentDescription = null) },
+                                        onClick = {
+                                            menuExpanded = false
+                                            showClearCompletedDialog = true
+                                        }
+                                    )
+                                }
+                                DropdownMenuItem(
+                                    text = { Text("Delete List", color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = { Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                    onClick = {
+                                        menuExpanded = false
+                                        onDeleteList(list)
                                     }
                                 )
                             }
-                            DropdownMenuItem(
-                                text = { Text("Delete List", color = MaterialTheme.colorScheme.error) },
-                                leadingIcon = { Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                                onClick = {
-                                    menuExpanded = false
-                                    onDeleteList(list)
-                                }
-                            )
                         }
                     }
                 },
@@ -197,7 +325,7 @@ fun ListDetailScreen(
             )
         },
         floatingActionButton = {
-            if (!list.isLocked || isBiometricUnlocked) {
+            if ((!list.isLocked || isBiometricUnlocked) && !isReadOnly) {
                 FloatingActionButton(
                     onClick = onAddTask,
                     containerColor = accentColor,
@@ -337,33 +465,56 @@ fun ListDetailScreen(
 
                 // Quick Add Input
                 item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = quickTaskText,
-                            onValueChange = { quickTaskText = it },
-                            placeholder = { Text("Quick add task to this list...") },
-                            modifier = Modifier
-                                .weight(1f)
-                                .testTag("quick_task_input"),
-                            shape = RoundedCornerShape(12.dp),
-                            singleLine = true
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(
-                            onClick = {
-                                if (quickTaskText.isNotBlank()) {
-                                    onQuickAddTask(quickTaskText.trim())
-                                    quickTaskText = ""
-                                }
-                            },
-                            enabled = quickTaskText.isNotBlank(),
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.height(52.dp)
+                    if (!isReadOnly) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("Add")
+                            OutlinedTextField(
+                                value = quickTaskText,
+                                onValueChange = { quickTaskText = it },
+                                placeholder = { Text("Quick add task to this list...") },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("quick_task_input"),
+                                shape = RoundedCornerShape(12.dp),
+                                singleLine = true
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    if (quickTaskText.isNotBlank()) {
+                                        onQuickAddTask(quickTaskText.trim())
+                                        quickTaskText = ""
+                                    }
+                                },
+                                enabled = quickTaskText.isNotBlank(),
+                                shape = RoundedCornerShape(12.dp),
+                                modifier = Modifier.height(52.dp)
+                            ) {
+                                Text("Add")
+                            }
+                        }
+                    } else {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                            ),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "View only mode – you have viewer permissions on this shared list",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
@@ -378,6 +529,41 @@ fun ListDetailScreen(
                                 label = { Text(label) },
                                 shape = RoundedCornerShape(10.dp)
                             )
+                        }
+                    }
+                }
+
+                // Updater Filters for shared list: "Updated by me", "Updated by [member]"
+                if (sharedFile != null && sharedFile.members.isNotEmpty()) {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Filter:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            FilterChip(
+                                selected = updaterFilter == null,
+                                onClick = { updaterFilter = null },
+                                label = { Text("All updaters", fontSize = 11.sp) },
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            FilterChip(
+                                selected = updaterFilter == "ME",
+                                onClick = { updaterFilter = if (updaterFilter == "ME") null else "ME" },
+                                label = { Text("Updated by me", fontSize = 11.sp) },
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            sharedFile.members.forEach { m ->
+                                if (!m.email.equals(currentUserEmail, ignoreCase = true)) {
+                                    FilterChip(
+                                        selected = updaterFilter == m.email,
+                                        onClick = { updaterFilter = if (updaterFilter == m.email) null else m.email },
+                                        label = { Text(m.name.ifBlank { m.email.substringBefore("@") }, fontSize = 11.sp) },
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -404,7 +590,7 @@ fun ListDetailScreen(
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                                 )
                                 Text(
-                                    text = "Use the input above or tap + to create your first task",
+                                    text = if (!isReadOnly) "Use the input above or tap + to create your first task" else "No tasks added by list members",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -416,11 +602,23 @@ fun ListDetailScreen(
                 // Incomplete Tasks List
                 if (filterMode != "COMPLETED") {
                     items(pendingTasks, key = { it.id }) { task ->
+                        val sharedTask = sharedFile?.tasks?.find { it.id == task.id }
                         DetailTaskCard(
                             task = task,
-                            onToggle = { onToggleTask(task) },
+                            sharedTask = sharedTask,
+                            sharedMembers = sharedFile?.members ?: emptyList(),
+                            isReadOnly = isReadOnly,
+                            onToggle = {
+                                if (isReadOnly) {
+                                    Toast.makeText(context, "Cannot toggle tasks in read-only mode", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    onToggleTask(task)
+                                }
+                            },
                             onEdit = { onEditTask(task) },
-                            onDelete = { onDeleteTask(task) }
+                            onDelete = {
+                                if (!isReadOnly) onDeleteTask(task)
+                            }
                         )
                     }
                 }
@@ -452,11 +650,23 @@ fun ListDetailScreen(
 
                     if (showCompletedSection) {
                         items(completedTasks, key = { it.id }) { task ->
+                            val sharedTask = sharedFile?.tasks?.find { it.id == task.id }
                             DetailTaskCard(
                                 task = task,
-                                onToggle = { onToggleTask(task) },
+                                sharedTask = sharedTask,
+                                sharedMembers = sharedFile?.members ?: emptyList(),
+                                isReadOnly = isReadOnly,
+                                onToggle = {
+                                    if (isReadOnly) {
+                                        Toast.makeText(context, "Cannot toggle tasks in read-only mode", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        onToggleTask(task)
+                                    }
+                                },
                                 onEdit = { onEditTask(task) },
-                                onDelete = { onDeleteTask(task) }
+                                onDelete = {
+                                    if (!isReadOnly) onDeleteTask(task)
+                                }
                             )
                         }
                     }
@@ -500,10 +710,14 @@ fun ListDetailScreen(
 @Composable
 fun DetailTaskCard(
     task: TaskItem,
+    sharedTask: SharedTaskItem? = null,
+    sharedMembers: List<com.example.data.model.ListMember> = emptyList(),
+    isReadOnly: Boolean = false,
     onToggle: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val dateFormat = remember { SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()) }
     val timeFormat = remember { SimpleDateFormat("hh:mm a", Locale.getDefault()) }
@@ -538,6 +752,7 @@ fun DetailTaskCard(
             ) {
                 Checkbox(
                     checked = task.isCompleted,
+                    enabled = !isReadOnly,
                     onCheckedChange = {
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onToggle()
@@ -631,13 +846,47 @@ fun DetailTaskCard(
                     }
                 }
 
-                IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
-                    Icon(
-                        imageVector = Icons.Default.DeleteOutline,
-                        contentDescription = "Delete Task",
-                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
-                        modifier = Modifier.size(18.dp)
-                    )
+                // 24dp Avatar circle for who-updated-it (Shared lists only)
+                if (sharedTask != null && (sharedTask.updatedByName.isNotBlank() || sharedTask.updatedBy.isNotBlank())) {
+                    val name = sharedTask.updatedByName.ifBlank { sharedTask.updatedBy }
+                    val initial = name.firstOrNull()?.uppercaseChar() ?: 'U'
+                    val memberColorHex = sharedMembers.find { it.email.equals(sharedTask.updatedBy, ignoreCase = true) }?.color
+                        ?: DriveColorPalette.getDeterministicColor(sharedTask.updatedBy)
+                    val avatarBg = DriveColorPalette.parseColor(memberColorHex)
+
+                    Box(
+                        modifier = Modifier
+                            .padding(horizontal = 4.dp)
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(avatarBg)
+                            .clickable {
+                                Toast.makeText(
+                                    context,
+                                    "Updated by $name · ${formatRelativeTime(sharedTask.updatedAt)}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = initial.toString(),
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+
+                if (!isReadOnly) {
+                    IconButton(onClick = onDelete, modifier = Modifier.size(28.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteOutline,
+                            contentDescription = "Delete Task",
+                            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                 }
             }
         }
