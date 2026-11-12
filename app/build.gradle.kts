@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.todolist.zkvmrq"
     minSdk = 24
     targetSdk = 36
-    versionCode = 4
-    versionName = "4.0"
+    versionCode = 5
+    versionName = "26.06.26.1"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

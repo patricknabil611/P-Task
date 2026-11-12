@@ -561,11 +561,11 @@ fun SettingsSheet(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "P Task v1.3.0",
+                                    text = "P Task v${com.example.BuildConfig.VERSION_NAME}",
                                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                                 )
                                 Text(
-                                    text = "Released Nov 2, 2026 • 30 MB APK",
+                                    text = "Released Nov 12, 2026 • 29 MB APK",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,

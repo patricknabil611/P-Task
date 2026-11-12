@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Undo
@@ -123,18 +124,24 @@ fun AboutDialog(
                         modifier = Modifier.padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        MetaInfoRow(label = "App Version", value = "v1.3.0 (Build 2026.11.02)")
-                        MetaInfoRow(label = "Date of Release", value = "November 2, 2026")
-                        MetaInfoRow(label = "App Size", value = "30 MB (Optimized APK)")
+                        MetaInfoRow(label = "App Version", value = "v${com.example.BuildConfig.VERSION_NAME} (Build ${com.example.BuildConfig.VERSION_CODE})")
+                        MetaInfoRow(label = "Date of Release", value = "November 12, 2026")
+                        MetaInfoRow(label = "App Size", value = "29 MB (Optimized APK)")
                         MetaInfoRow(label = "Target Platform", value = "Android 15/16 (Galaxy S25 Ultra Optimized)")
                     }
                 }
 
                 // What's New Section
                 Text(
-                    text = "New in Latest Version (v1.3.0)",
+                    text = "New in Latest Version (v${com.example.BuildConfig.VERSION_NAME})",
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
                     color = MaterialTheme.colorScheme.primary
+                )
+
+                ChangelogItem(
+                    icon = Icons.Default.Cloud,
+                    title = "Google Drive Shared Lists",
+                    description = "Collaborate on todo lists using your Google Drive. Real-time background sync, who-updated-it avatar badges with 12 distinct collaborator colors, and offline editing."
                 )
 
                 ChangelogItem(
