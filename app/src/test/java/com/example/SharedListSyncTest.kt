@@ -9,8 +9,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
 import org.junit.Test
 
+@RunWith(RobolectricTestRunner::class)
 class SharedListSyncTest {
 
     @Test
@@ -99,5 +102,43 @@ class SharedListSyncTest {
         assertTrue(cleaned.tasks.any { it.id == "active_task" })
         assertTrue(cleaned.tasks.any { it.id == "recent_deleted" })
         assertFalse(cleaned.tasks.any { it.id == "expired_deleted" })
+    }
+
+    @Test
+    fun testReadOnlySharedList_doesNotTriggerBiometricLock() {
+        val list = SharedTodoListFile(
+            id = "shared_ro_1",
+            name = "Viewer List",
+            ownerEmail = "owner@gmail.com"
+        )
+        val todoList = list.toTodoList(isReadOnly = true)
+        assertFalse(todoList.isLocked)
+        assertEquals("Viewer List", todoList.title)
+    }
+
+    @Test
+    fun testMergeLists_newestUpdatedAtWinsAndNoDuplicateIds() {
+        val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.content.Context>()
+        val manager = SharedListSyncManager(context)
+        val remote = SharedTodoListFile(
+            id = "list_m",
+            updatedAt = 2000L,
+            tasks = listOf(
+                SharedTaskItem(id = "t1", title = "Old Title", updatedAt = 1000L),
+                SharedTaskItem(id = "t2", title = "Remote Only", updatedAt = 2000L)
+            )
+        )
+        val local = SharedTodoListFile(
+            id = "list_m",
+            updatedAt = 3000L,
+            tasks = listOf(
+                SharedTaskItem(id = "t1", title = "New Title", updatedAt = 3000L),
+                SharedTaskItem(id = "t3", title = "Local Only", updatedAt = 3000L)
+            )
+        )
+        val merged = manager.mergeLists(remote, local)
+        assertEquals(3, merged.tasks.size)
+        assertEquals(3, merged.tasks.map { it.id }.distinct().size)
+        assertEquals("New Title", merged.tasks.first { it.id == "t1" }.title)
     }
 }

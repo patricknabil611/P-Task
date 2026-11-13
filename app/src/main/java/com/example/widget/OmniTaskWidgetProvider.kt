@@ -30,11 +30,15 @@ class OmniTaskWidgetProvider : AppWidgetProvider() {
 
         fun updateAllWidgets(context: Context, tasks: List<TaskItem>) {
             cachedTasks = tasks
-            val appWidgetManager = AppWidgetManager.getInstance(context)
-            val thisWidget = ComponentName(context, OmniTaskWidgetProvider::class.java)
-            val allWidgetIds = appWidgetManager.getAppWidgetIds(thisWidget)
-            for (widgetId in allWidgetIds) {
-                updateAppWidget(context, appWidgetManager, widgetId, tasks)
+            try {
+                val appWidgetManager = AppWidgetManager.getInstance(context)
+                val thisWidget = ComponentName(context, OmniTaskWidgetProvider::class.java)
+                val allWidgetIds = appWidgetManager.getAppWidgetIds(thisWidget)
+                for (widgetId in allWidgetIds) {
+                    updateAppWidget(context, appWidgetManager, widgetId, tasks)
+                }
+            } catch (_: Exception) {
+                // Ignore widget update failures when widgets aren't placed or OS service is busy
             }
         }
 

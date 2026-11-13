@@ -64,17 +64,28 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
     val sharedListsMap: StateFlow<Map<String, SharedListState>> = syncManager.sharedListsMap
     val syncStatusMap: StateFlow<Map<String, SyncStatus>> = syncManager.syncStatusMap
 
-    private fun getCurrentUserEmail(): String {
-        return Firebase.auth.currentUser?.email
-            ?: GoogleDriveAuthHelper.getCurrentGoogleAccount(getApplication())?.email
+    fun getCurrentUserEmail(): String {
+        return GoogleDriveAuthHelper.getCurrentGoogleAccount(getApplication())?.email
+            ?: Firebase.auth.currentUser?.email
             ?: "user@example.com"
     }
 
-    private fun getCurrentUserName(): String {
-        return Firebase.auth.currentUser?.displayName
-            ?: GoogleDriveAuthHelper.getCurrentGoogleAccount(getApplication())?.displayName
+    fun getCurrentUserName(): String {
+        return GoogleDriveAuthHelper.getCurrentGoogleAccount(getApplication())?.displayName
+            ?: Firebase.auth.currentUser?.displayName
             ?: getCurrentUserEmail().substringBefore("@")
     }
+
+    private val _isDriveConnected = MutableStateFlow(
+        GoogleDriveAuthHelper.hasDrivePermission(application)
+    )
+    val isDriveConnected: StateFlow<Boolean> = _isDriveConnected.asStateFlow()
+
+    private val _isRefreshingDrive = MutableStateFlow(false)
+    val isRefreshingDrive: StateFlow<Boolean> = _isRefreshingDrive.asStateFlow()
+
+    private var pendingOneStepShare: (() -> Unit)? = null
+    private var pendingOneStepCancel: ((String) -> Unit)? = null
 
     private val _userAvatarColor = MutableStateFlow(
         DriveColorPalette.getUserColor(application, getCurrentUserEmail())
@@ -102,7 +113,9 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
         val sharedTasks = sharedMap.values.flatMap { state ->
             state.file.tasks.filterNot { it.isDeleted }.map { it.toTaskItem() }
         }
-        val combinedTasks = localTasks + sharedTasks
+        // Deduplicate tasks: shared version takes precedence if in a shared list,
+        // and ensure no two tasks have the same ID to prevent LazyColumn duplicate key crashes
+        val combinedTasks = (sharedTasks + localTasks).distinctBy { it.id }
 
         val effectiveTasks = if (optimisticMap.isEmpty()) {
             combinedTasks
@@ -176,32 +189,98 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
         _driveAuthIntent.value = null
     }
 
-    fun refreshDriveSharedLists(onComplete: () -> Unit = {}) {
+    fun refreshDriveSharedLists(interactive: Boolean = false, onComplete: () -> Unit = {}) {
         viewModelScope.launch {
+            if (interactive) _isRefreshingDrive.value = true
             try {
+                _isDriveConnected.value = GoogleDriveAuthHelper.hasDrivePermission(getApplication())
                 val authRes = GoogleDriveAuthHelper.getAccessToken(getApplication())
                 when (authRes) {
                     is DriveAuthResult.Success -> {
-                        syncManager.refreshDiscoveredSharedLists(authRes.token, authRes.account.email.orEmpty())
+                        _isDriveConnected.value = true
+                        val res = syncManager.refreshDiscoveredSharedLists(authRes.token, authRes.account.email.orEmpty())
+                        res.onSuccess { list ->
+                            if (interactive) {
+                                showSnack("Synced ${list.size} shared list(s) with Google Drive")
+                            }
+                        }.onFailure { err ->
+                            Log.w("TodoViewModel", "Drive refresh failed: ${err.message}")
+                            if (interactive) {
+                                showSnack("Drive sync issue: ${err.message}")
+                            }
+                        }
                         onComplete()
                     }
                     is DriveAuthResult.NeedsUserConsent -> {
-                        _driveAuthIntent.value = authRes.intent
+                        _isDriveConnected.value = false
+                        if (interactive) {
+                            _driveAuthIntent.value = authRes.intent
+                        }
                         onComplete()
                     }
                     is DriveAuthResult.NeedsSignIn -> {
-                        _driveAuthIntent.value = authRes.signInIntent
+                        _isDriveConnected.value = false
+                        if (interactive) {
+                            _driveAuthIntent.value = authRes.signInIntent
+                        }
                         onComplete()
                     }
                     is DriveAuthResult.Error -> {
                         Log.w("TodoViewModel", "Drive not connected: ${authRes.message}")
+                        if (authRes.isRecoverable) {
+                            _isDriveConnected.value = false
+                        }
+                        if (interactive) {
+                            showSnack(authRes.message)
+                        }
                         onComplete()
                     }
                 }
             } catch (e: Exception) {
                 Log.e("TodoViewModel", "Error refreshing shared lists", e)
+                if (interactive) {
+                    showSnack("Error refreshing Drive lists: ${e.message}")
+                }
                 onComplete()
+            } finally {
+                _isRefreshingDrive.value = false
             }
+        }
+    }
+
+    fun connectGoogleDrive() {
+        refreshDriveSharedLists(interactive = true)
+    }
+
+    fun onDriveAccountConnected(account: com.google.android.gms.auth.api.signin.GoogleSignInAccount) {
+        _isDriveConnected.value = GoogleDriveAuthHelper.hasDrivePermission(getApplication()) || account.email != null
+        _userAvatarColor.value = DriveColorPalette.getUserColor(getApplication(), getCurrentUserEmail())
+        val pending = pendingOneStepShare
+        pendingOneStepShare = null
+        pendingOneStepCancel = null
+        if (pending != null) {
+            pending.invoke()
+        } else {
+            showSnack("Connected to Google Drive as ${account.email}")
+            refreshDriveSharedLists(interactive = false)
+        }
+    }
+
+    fun onDriveConsentCancelled() {
+        pendingOneStepShare = null
+        val cancelCb = pendingOneStepCancel
+        pendingOneStepCancel = null
+        cancelCb?.invoke("Google Drive permission is required to share lists.")
+        refreshDriveSharedLists(interactive = false)
+    }
+
+    fun onUserSignOut(onComplete: () -> Unit) {
+        pendingOneStepShare = null
+        pendingOneStepCancel = null
+        syncManager.clearAllCaches()
+        _isDriveConnected.value = false
+        GoogleDriveAuthHelper.signOut(getApplication()) {
+            onComplete()
         }
     }
 
@@ -252,12 +331,117 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
         showSnack("Personal avatar color updated")
     }
 
+    // 1-Step Sharing: Authorize Drive if needed -> Upload list if needed -> Invite email -> Return clear confirmation
+    fun shareListAndInviteOneStep(
+        localList: TodoList,
+        inviteEmail: String,
+        role: String,
+        onComplete: (success: Boolean, message: String) -> Unit
+    ) {
+        val cleanEmail = inviteEmail.trim()
+        if (cleanEmail.isBlank() || !android.util.Patterns.EMAIL_ADDRESS.matcher(cleanEmail).matches()) {
+            onComplete(false, "Please enter a valid email address.")
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val authRes = GoogleDriveAuthHelper.getAccessToken(getApplication())
+                if (authRes !is DriveAuthResult.Success) {
+                    _isDriveConnected.value = false
+                    when (authRes) {
+                        is DriveAuthResult.NeedsUserConsent -> {
+                            pendingOneStepShare = { shareListAndInviteOneStep(localList, cleanEmail, role, onComplete) }
+                            pendingOneStepCancel = { msg -> onComplete(false, msg) }
+                            _driveAuthIntent.value = authRes.intent
+                        }
+                        is DriveAuthResult.NeedsSignIn -> {
+                            pendingOneStepShare = { shareListAndInviteOneStep(localList, cleanEmail, role, onComplete) }
+                            pendingOneStepCancel = { msg -> onComplete(false, msg) }
+                            _driveAuthIntent.value = authRes.signInIntent
+                        }
+                        is DriveAuthResult.Error -> {
+                            onComplete(false, authRes.message)
+                        }
+                        else -> {
+                            onComplete(false, "Google Drive authorization is required.")
+                        }
+                    }
+                    return@launch
+                }
+                _isDriveConnected.value = true
+
+                val currentEmail = authRes.account.email.orEmpty().ifBlank { getCurrentUserEmail() }
+                val currentName = authRes.account.displayName.orEmpty().ifBlank { getCurrentUserName() }
+                val currentColor = _userAvatarColor.value
+
+                if (cleanEmail.equals(currentEmail, ignoreCase = true)) {
+                    onComplete(false, "You are already the owner of this list.")
+                    return@launch
+                }
+
+                // Step 1: Ensure list exists in Google Drive if not yet uploaded
+                val existingShared = syncManager.sharedListsMap.value[localList.id]
+                if (existingShared == null || existingShared.file.driveFileId.isBlank()) {
+                    val existingTasks = ((allTasksState.value as? UiState.Success)?.data ?: emptyList())
+                        .filter { it.listId == localList.id }
+                        .distinctBy { it.id }
+                        .map { SharedTaskItem.fromTaskItem(it, currentEmail, currentName) }
+
+                    val ownerMember = ListMember(
+                        email = currentEmail,
+                        name = currentName,
+                        color = currentColor,
+                        role = "owner"
+                    )
+
+                    val sharedList = SharedTodoListFile(
+                        id = localList.id,
+                        name = localList.title,
+                        ownerEmail = currentEmail,
+                        ownerName = currentName,
+                        description = localList.description,
+                        category = localList.category,
+                        icon = localList.icon,
+                        colorHex = localList.colorHex,
+                        createdAt = System.currentTimeMillis(),
+                        updatedAt = System.currentTimeMillis(),
+                        members = listOf(ownerMember),
+                        tasks = existingTasks
+                    )
+
+                    val createRes = syncManager.createAndUploadSharedList(authRes.token, sharedList, currentEmail)
+                    if (createRes.isFailure) {
+                        val errMsg = createRes.exceptionOrNull()?.message ?: "Upload failed"
+                        onComplete(false, "Could not prepare list on Google Drive: $errMsg")
+                        return@launch
+                    }
+                }
+
+                // Step 2: Grant permission & send email notification via Drive Permissions API
+                val inviteRes = syncManager.inviteMember(localList.id, cleanEmail, role)
+                inviteRes.onSuccess {
+                    showSnack("Shared \"${localList.title}\" with $cleanEmail")
+                    onComplete(
+                        true,
+                        "Shared with $cleanEmail! An email notification was sent, and the list will appear under 'Shared with me' in their P Task app."
+                    )
+                }.onFailure { err ->
+                    onComplete(false, "Could not share with $cleanEmail: ${err.message}")
+                }
+            } catch (e: Exception) {
+                onComplete(false, e.localizedMessage ?: "Failed sharing list")
+            }
+        }
+    }
+
     // Google Drive Sharing Functions
     fun shareListToDrive(localList: TodoList, onComplete: (Boolean, String?) -> Unit) {
         viewModelScope.launch {
             try {
                 val authRes = GoogleDriveAuthHelper.getAccessToken(getApplication())
                 if (authRes !is DriveAuthResult.Success) {
+                    _isDriveConnected.value = false
                     when (authRes) {
                         is DriveAuthResult.NeedsUserConsent -> _driveAuthIntent.value = authRes.intent
                         is DriveAuthResult.NeedsSignIn -> _driveAuthIntent.value = authRes.signInIntent
@@ -267,6 +451,7 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
                     onComplete(false, "Google Drive authorization required")
                     return@launch
                 }
+                _isDriveConnected.value = true
 
                 val currentEmail = authRes.account.email.orEmpty().ifBlank { getCurrentUserEmail() }
                 val currentName = authRes.account.displayName.orEmpty().ifBlank { getCurrentUserName() }
@@ -275,6 +460,7 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
                 // Gather existing local tasks for this list
                 val existingTasks = ((allTasksState.value as? UiState.Success)?.data ?: emptyList())
                     .filter { it.listId == localList.id }
+                    .distinctBy { it.id }
                     .map { SharedTaskItem.fromTaskItem(it, currentEmail, currentName) }
 
                 val ownerMember = ListMember(

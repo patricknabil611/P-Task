@@ -16,14 +16,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.ExitToApp
-import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -35,9 +35,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -53,6 +51,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,10 +68,7 @@ fun ShareListDialog(
     list: TodoList,
     sharedFile: SharedTodoListFile?,
     currentUserEmail: String,
-    isDriveConnected: Boolean,
-    onConnectDrive: () -> Unit,
-    onShareToDrive: () -> Unit,
-    onInviteMember: (email: String, role: String) -> Unit,
+    onOneStepShare: (email: String, role: String, onResult: (Boolean, String) -> Unit) -> Unit,
     onUpdateRole: (memberEmail: String, newRole: String) -> Unit,
     onRemoveMember: (memberEmail: String) -> Unit,
     onLeaveList: () -> Unit,
@@ -80,12 +77,27 @@ fun ShareListDialog(
 ) {
     var inviteEmail by remember { mutableStateOf("") }
     var selectedRole by remember { mutableStateOf("editor") } // "editor" or "viewer"
-    var isInviting by remember { mutableStateOf(false) }
+    var isSharing by remember { mutableStateOf(false) }
+    var statusMessage by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showLeaveConfirm by remember { mutableStateOf(false) }
 
     val isShared = sharedFile != null && sharedFile.driveFileId.isNotBlank()
-    val isOwner = sharedFile?.ownerEmail.equals(currentUserEmail, ignoreCase = true) || !isShared
+    val isOwner = !isShared || sharedFile?.ownerEmail.equals(currentUserEmail, ignoreCase = true)
+
+    fun triggerShare() {
+        val trimmed = inviteEmail.trim()
+        if (trimmed.isBlank() || isSharing) return
+        isSharing = true
+        statusMessage = null
+        onOneStepShare(trimmed, selectedRole) { success, message ->
+            isSharing = false
+            statusMessage = success to message
+            if (success) {
+                inviteEmail = ""
+            }
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -140,157 +152,119 @@ fun ShareListDialog(
 
                 Spacer(modifier = Modifier.height(18.dp))
 
-                if (!isDriveConnected) {
-                    // Google Drive not connected warning
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f)
+                // 1-Step Email Input + Share Button (shown immediately for Owner or unshared lists)
+                if (isOwner) {
+                    OutlinedTextField(
+                        value = inviteEmail,
+                        onValueChange = {
+                            inviteEmail = it
+                            if (statusMessage?.first == false) {
+                                statusMessage = null
+                            }
+                        },
+                        label = { Text("Google / Gmail address") },
+                        placeholder = { Text("friend@gmail.com") },
+                        singleLine = true,
+                        enabled = !isSharing,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Email,
+                            imeAction = ImeAction.Send
                         ),
-                        shape = RoundedCornerShape(14.dp),
+                        keyboardActions = KeyboardActions(
+                            onSend = { triggerShare() }
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("invite_email_input"),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Text(
-                                text = "Google Drive Access Required",
-                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "Sign in with Google Drive to share lists and collaborate seamlessly.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Button(
-                                onClick = onConnectDrive,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.primary
-                                )
-                            ) {
-                                Text("Connect Google Drive")
-                            }
-                        }
-                    }
-                } else if (!isShared) {
-                    // List is not yet shared on Drive
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                        ),
-                        shape = RoundedCornerShape(16.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.CloudUpload,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(48.dp)
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Text(
-                                text = "Share to Google Drive",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = "This list will be saved in your 'P Task Shared' folder in Google Drive. You can invite other Google accounts to view or edit tasks.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Button(
-                                onClick = {
-                                    isInviting = true
-                                    onShareToDrive()
-                                },
-                                modifier = Modifier.fillMaxWidth().testTag("share_to_drive_button"),
-                                shape = RoundedCornerShape(12.dp),
-                                enabled = !isInviting
-                            ) {
-                                if (isInviting) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(20.dp),
-                                        color = MaterialTheme.colorScheme.onPrimary,
-                                        strokeWidth = 2.dp
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                }
-                                Text("Share to Google Drive")
-                            }
-                        }
-                    }
-                } else {
-                    // List is already shared on Drive
-                    // 1. Invite section (owner and editors can invite)
-                    if (isOwner) {
-                        Text(
-                            text = "Invite Collaborator",
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                        FilterChip(
+                            selected = selectedRole == "editor",
+                            onClick = { if (!isSharing) selectedRole = "editor" },
+                            label = { Text("Can edit") }
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
+                        FilterChip(
+                            selected = selectedRole == "viewer",
+                            onClick = { if (!isSharing) selectedRole = "viewer" },
+                            label = { Text("Can view") }
+                        )
+                        Spacer(modifier = Modifier.weight(1f))
+                        Button(
+                            onClick = { triggerShare() },
+                            enabled = !isSharing && inviteEmail.isNotBlank() && inviteEmail.contains("@"),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.testTag("send_invite_button")
                         ) {
-                            OutlinedTextField(
-                                value = inviteEmail,
-                                onValueChange = { inviteEmail = it },
-                                placeholder = { Text("user@gmail.com") },
-                                singleLine = true,
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .testTag("invite_email_input"),
-                                shape = RoundedCornerShape(12.dp)
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            FilterChip(
-                                selected = selectedRole == "editor",
-                                onClick = { selectedRole = "editor" },
-                                label = { Text("Can edit") }
-                            )
-                            FilterChip(
-                                selected = selectedRole == "viewer",
-                                onClick = { selectedRole = "viewer" },
-                                label = { Text("Can view") }
-                            )
-                            Spacer(modifier = Modifier.weight(1f))
-                            Button(
-                                onClick = {
-                                    if (inviteEmail.isNotBlank()) {
-                                        onInviteMember(inviteEmail.trim(), selectedRole)
-                                        inviteEmail = ""
-                                    }
-                                },
-                                enabled = inviteEmail.isNotBlank() && inviteEmail.contains("@"),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier.testTag("send_invite_button")
-                            ) {
-                                Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Invite")
+                            if (isSharing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Sharing…")
+                            } else {
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Share")
                             }
                         }
-
-                        Spacer(modifier = Modifier.height(16.dp))
                     }
 
-                    // 2. Members list
+                    // Inline Confirmation / Error Message right inside the dialog
+                    statusMessage?.let { (isSuccess, msg) ->
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isSuccess)
+                                    Color(0xFF10B981).copy(alpha = 0.14f)
+                                else
+                                    MaterialTheme.colorScheme.errorContainer
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("share_status_banner")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Icon(
+                                    imageVector = if (isSuccess) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
+                                    contentDescription = null,
+                                    tint = if (isSuccess) Color(0xFF047857) else MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = msg,
+                                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                                    color = if (isSuccess) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+                }
+
+                // Members List (when shared)
+                if (sharedFile != null) {
+                    val distinctMembers = remember(sharedFile.members) {
+                        sharedFile.members.distinctBy { it.email.trim().lowercase() }
+                    }
+
                     Text(
-                        text = "Members (${sharedFile.members.size})",
+                        text = "Members (${distinctMembers.size})",
                         style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -301,7 +275,7 @@ fun ShareListDialog(
                             .weight(1f, fill = false),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(sharedFile.members, key = { it.email }) { member ->
+                        items(distinctMembers, key = { it.email.trim().lowercase() }) { member ->
                             MemberRow(
                                 member = member,
                                 isCurrentUser = member.email.equals(currentUserEmail, ignoreCase = true),
@@ -313,55 +287,45 @@ fun ShareListDialog(
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
-
-                    // 3. Actions: Leave or Delete
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (isOwner) {
-                            TextButton(
-                                onClick = { showDeleteConfirm = true },
-                                colors = ButtonDefaults.textButtonColors(
-                                    contentColor = MaterialTheme.colorScheme.error
-                                )
-                            ) {
-                                Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Delete for everyone")
-                            }
-                        } else {
-                            TextButton(
-                                onClick = { showLeaveConfirm = true },
-                                colors = ButtonDefaults.textButtonColors(
-                                    contentColor = MaterialTheme.colorScheme.error
-                                )
-                            ) {
-                                Icon(Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Leave List")
-                            }
-                        }
-
-                        Button(
-                            onClick = onDismiss,
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("Done")
-                        }
-                    }
                 }
 
-                if (!isShared && isDriveConnected) {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        TextButton(onClick = onDismiss) {
-                            Text("Close")
+                // Bottom Action Row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isShared && isOwner) {
+                        TextButton(
+                            onClick = { showDeleteConfirm = true },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            )
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Delete for everyone")
                         }
+                    } else if (isShared && !isOwner) {
+                        TextButton(
+                            onClick = { showLeaveConfirm = true },
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            )
+                        ) {
+                            Icon(Icons.Default.ExitToApp, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Leave List")
+                        }
+                    } else {
+                        Spacer(modifier = Modifier.width(1.dp))
+                    }
+
+                    Button(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("Done")
                     }
                 }
             }
@@ -461,14 +425,12 @@ private fun MemberRow(
         Spacer(modifier = Modifier.width(12.dp))
 
         Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = if (isCurrentUser) "${member.name.ifBlank { member.email }} (You)" else member.name.ifBlank { member.email },
-                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            Text(
+                text = if (isCurrentUser) "${member.name.ifBlank { member.email }} (You)" else member.name.ifBlank { member.email },
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             Text(
                 text = member.email,
                 style = MaterialTheme.typography.bodySmall,

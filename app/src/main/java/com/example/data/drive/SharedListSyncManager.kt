@@ -76,12 +76,14 @@ class SharedListSyncManager(
                 try {
                     val content = f.readText()
                     val shared = SharedTodoListFile.fromJsonString(content)
-                    map[shared.id] = SharedListState(
-                        file = shared,
-                        summary = null,
-                        isReadOnly = false,
-                        hasPendingUpload = false
-                    )
+                    if (shared.id.isNotBlank()) {
+                        map[shared.id] = SharedListState(
+                            file = shared,
+                            summary = null,
+                            isReadOnly = false,
+                            hasPendingUpload = false
+                        )
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed reading cache file ${f.name}", e)
                 }
@@ -89,6 +91,18 @@ class SharedListSyncManager(
             _sharedListsMap.value = map
         } catch (e: Exception) {
             Log.e(TAG, "Error loading cached lists", e)
+        }
+    }
+
+    fun clearAllCaches() {
+        stopActivePolling()
+        lastKnownModifiedTime.clear()
+        _sharedListsMap.value = emptyMap()
+        _syncStatusMap.value = emptyMap()
+        try {
+            cacheDir.listFiles()?.forEach { it.delete() }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed clearing shared cache dir", e)
         }
     }
 
@@ -130,7 +144,11 @@ class SharedListSyncManager(
             while (isActive && currentlyOpenListId == listId) {
                 delay(POLL_INTERVAL_MS)
                 if (!isActive || currentlyOpenListId != listId) break
-                checkAndSyncModifiedList(listId)
+                try {
+                    checkAndSyncModifiedList(listId)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Active polling error for $listId", e)
+                }
             }
         }
     }
@@ -150,6 +168,9 @@ class SharedListSyncManager(
     suspend fun refreshDiscoveredSharedLists(token: String, currentUserEmail: String): Result<List<SharedListState>> = withContext(Dispatchers.IO) {
         val queryResult = driveService.querySharedLists(token, currentUserEmail)
         if (queryResult is DriveApiResult.Error) {
+            if (queryResult.isUnauthorized) {
+                GoogleDriveAuthHelper.invalidateToken(context, token)
+            }
             return@withContext Result.failure(Exception(queryResult.message))
         }
 
@@ -207,6 +228,7 @@ class SharedListSyncManager(
             if (modTimeResult.isNotFound) {
                 setSyncStatus(listId, SyncStatus.DELETED_BY_OWNER)
             } else if (modTimeResult.isUnauthorized) {
+                GoogleDriveAuthHelper.invalidateToken(context, token)
                 setSyncStatus(listId, SyncStatus.ACCESS_REVOKED)
             } else {
                 setSyncStatus(listId, SyncStatus.OFFLINE)
@@ -438,9 +460,15 @@ class SharedListSyncManager(
         val appRole = if (driveRole == "reader") "viewer" else "editor"
 
         val permRes = driveService.addPermission(tokenRes.token, state.file.driveFileId, email, driveRole)
-        val permId = (permRes as? DriveApiResult.Success)?.data.orEmpty()
+        if (permRes is DriveApiResult.Error) {
+            if (permRes.isUnauthorized) {
+                GoogleDriveAuthHelper.invalidateToken(context, tokenRes.token)
+            }
+            return@withContext Result.failure(Exception(permRes.message))
+        }
+        val permId = (permRes as DriveApiResult.Success).data
 
-        saveSharedListChanges(listId) { file ->
+        val saveRes = saveSharedListChanges(listId) { file ->
             val existingColors = file.members.map { it.color }
             val memberColor = DriveColorPalette.getDeterministicColor(email, existingColors)
             val updatedMembers = file.members.filterNot { it.email.equals(email, ignoreCase = true) } +
@@ -453,7 +481,7 @@ class SharedListSyncManager(
                     )
             file.copy(members = updatedMembers)
         }
-        Result.success(Unit)
+        saveRes.map { Unit }
     }
 
     /**

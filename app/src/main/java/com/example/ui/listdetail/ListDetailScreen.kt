@@ -1,9 +1,12 @@
 package com.example.ui.listdetail
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -94,6 +97,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.ui.platform.LocalContext
 import com.example.data.drive.DriveColorPalette
 import com.example.data.drive.SyncStatus
@@ -121,6 +125,7 @@ fun ListDetailScreen(
     sharedFile: SharedTodoListFile? = null,
     syncStatus: SyncStatus = SyncStatus.SYNCED,
     isReadOnly: Boolean = false,
+    isRefreshing: Boolean = false,
     currentUserEmail: String = "",
     onBack: () -> Unit,
     onRequestUnlock: () -> Unit,
@@ -135,6 +140,8 @@ fun ListDetailScreen(
     onShareList: () -> Unit = {},
     onRefreshList: () -> Unit = {}
 ) {
+    BackHandler(onBack = onBack)
+
     val context = LocalContext.current
     var menuExpanded by remember { mutableStateOf(false) }
     var quickTaskText by remember { mutableStateOf("") }
@@ -169,8 +176,8 @@ fun ListDetailScreen(
     }
 
     val totalCount = filteredTasks.size
-    val pendingTasks = remember(filteredTasks) { filteredTasks.filter { !it.isCompleted } }
-    val completedTasks = remember(filteredTasks) { filteredTasks.filter { it.isCompleted }.sortedByDescending { it.completedAt } }
+    val pendingTasks = remember(filteredTasks) { filteredTasks.filter { !it.isCompleted }.distinctBy { it.id } }
+    val completedTasks = remember(filteredTasks) { filteredTasks.filter { it.isCompleted }.sortedByDescending { it.completedAt }.distinctBy { it.id } }
     val completedCount = completedTasks.size
     val progress = if (totalCount > 0) completedCount.toFloat() / totalCount.toFloat() else 0f
 
@@ -267,7 +274,7 @@ fun ListDetailScreen(
                 },
                 actions = {
                     IconButton(onClick = onShareList, modifier = Modifier.testTag("detail_share_button")) {
-                        Icon(Icons.Default.Share, contentDescription = "Share on Google Drive")
+                        Icon(Icons.Default.Share, contentDescription = "Share")
                     }
                     if (sharedFile != null) {
                         IconButton(onClick = onRefreshList) {
@@ -283,7 +290,7 @@ fun ListDetailScreen(
                             onDismissRequest = { menuExpanded = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Share on Google Drive") },
+                                text = { Text("Share") },
                                 leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
                                 onClick = {
                                     menuExpanded = false
@@ -404,13 +411,18 @@ fun ListDetailScreen(
             }
         } else {
             // Unlocked Content View
-            LazyColumn(
+            PullToRefreshBox(
+                isRefreshing = isRefreshing && sharedFile != null,
+                onRefresh = { if (sharedFile != null) onRefreshList() },
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                    .padding(padding)
             ) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
                 // Header Banner Card
                 item {
                     Card(
@@ -537,7 +549,9 @@ fun ListDetailScreen(
                 if (sharedFile != null && sharedFile.members.isNotEmpty()) {
                     item {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -675,6 +689,7 @@ fun ListDetailScreen(
                 item {
                     Spacer(modifier = Modifier.height(60.dp))
                 }
+            }
             }
         }
     }

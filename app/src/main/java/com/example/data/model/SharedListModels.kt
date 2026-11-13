@@ -169,7 +169,7 @@ data class SharedTodoListFile(
             icon = icon,
             colorHex = colorHex,
             isPinned = false,
-            isLocked = isReadOnly, // visual indicator or mapped to read-only
+            isLocked = false, // Read-only access is handled by isReadOnly, not biometric lock
             orderIndex = 0
         )
     }

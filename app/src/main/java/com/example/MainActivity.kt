@@ -66,6 +66,7 @@ class MainActivity : FragmentActivity() {
 
         setContent {
             var currentUser by remember { mutableStateOf(Firebase.auth.currentUser) }
+            var justSignedIn by remember { mutableStateOf(false) }
 
             DisposableEffect(Unit) {
                 val listener = FirebaseAuth.AuthStateListener { auth ->
@@ -80,13 +81,20 @@ class MainActivity : FragmentActivity() {
             if (currentUser == null) {
                 PTaskTheme {
                     AuthScreen(
-                        onAuthSuccess = { currentUser = Firebase.auth.currentUser }
+                        onAuthSuccess = {
+                            justSignedIn = true
+                            currentUser = Firebase.auth.currentUser
+                        }
                     )
                 }
             } else {
                 PTaskApp(
                     activity = this,
+                    userUid = currentUser?.uid ?: "default",
+                    autoConnectDriveOnEntry = justSignedIn,
+                    onConsumeAutoConnectDrive = { justSignedIn = false },
                     onSignOut = {
+                        justSignedIn = false
                         Firebase.auth.signOut()
                         currentUser = null
                     }
@@ -99,8 +107,11 @@ class MainActivity : FragmentActivity() {
 @Composable
 fun PTaskApp(
     activity: FragmentActivity,
+    userUid: String = "default",
+    autoConnectDriveOnEntry: Boolean = false,
+    onConsumeAutoConnectDrive: () -> Unit = {},
     onSignOut: () -> Unit,
-    viewModel: TodoViewModel = viewModel()
+    viewModel: TodoViewModel = viewModel(key = userUid)
 ) {
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -109,6 +120,8 @@ fun PTaskApp(
     val allTasksState by viewModel.allTasksState.collectAsStateWithLifecycle()
     val sharedListsMap by viewModel.sharedListsMap.collectAsStateWithLifecycle()
     val syncStatusMap by viewModel.syncStatusMap.collectAsStateWithLifecycle()
+    val isDriveConnected by viewModel.isDriveConnected.collectAsStateWithLifecycle()
+    val isRefreshingDrive by viewModel.isRefreshingDrive.collectAsStateWithLifecycle()
     val userAvatarColor by viewModel.userAvatarColor.collectAsStateWithLifecycle()
     val driveAuthIntent by viewModel.driveAuthIntent.collectAsStateWithLifecycle()
     val settings by viewModel.settingsState.collectAsStateWithLifecycle()
@@ -136,11 +149,24 @@ fun PTaskApp(
     var showVoiceNlpSheet by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
 
-    // Drive Consent Activity Result Launcher
     val driveConsentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
-    ) {
-        viewModel.refreshDriveSharedLists()
+    ) { result ->
+        val account = com.example.data.drive.GoogleDriveAuthHelper.handleSignInResult(result.data)
+        if (account != null) {
+            viewModel.onDriveAccountConnected(account)
+        } else {
+            viewModel.onDriveConsentCancelled()
+        }
+    }
+
+    LaunchedEffect(autoConnectDriveOnEntry, isDriveConnected) {
+        if (autoConnectDriveOnEntry) {
+            onConsumeAutoConnectDrive()
+            if (!isDriveConnected) {
+                viewModel.connectGoogleDrive()
+            }
+        }
     }
 
     LaunchedEffect(driveAuthIntent) {
@@ -221,7 +247,8 @@ fun PTaskApp(
                             sharedFile = currentSharedState?.file,
                             syncStatus = syncStatusMap[currentSelectedList.id] ?: SyncStatus.SYNCED,
                             isReadOnly = currentSharedState?.isReadOnly ?: false,
-                            currentUserEmail = Firebase.auth.currentUser?.email.orEmpty(),
+                            isRefreshing = isRefreshingDrive,
+                            currentUserEmail = viewModel.getCurrentUserEmail(),
                             onBack = { viewModel.selectList(null) },
                             onRequestUnlock = {
                                 BiometricAuthManager.promptBiometric(
@@ -268,7 +295,7 @@ fun PTaskApp(
                                 listToShare = currentSelectedList
                                 showShareDialog = true
                             },
-                            onRefreshList = { viewModel.refreshDriveSharedLists() }
+                            onRefreshList = { viewModel.refreshDriveSharedLists(interactive = true) }
                         )
                     } else {
                         DashboardScreen(
@@ -278,6 +305,9 @@ fun PTaskApp(
                             selectedCategory = selectedCategory,
                             availableCategories = resolvedCategories,
                             sharedListsMap = sharedListsMap,
+                            currentUserEmail = viewModel.getCurrentUserEmail(),
+                            isDriveConnected = isDriveConnected,
+                            isRefreshingDrive = isRefreshingDrive,
                             onSearchChange = { viewModel.setSearchQuery(it) },
                             onCategoryChange = { viewModel.setCategoryFilter(it) },
                             onSelectList = { list ->
@@ -332,7 +362,10 @@ fun PTaskApp(
                                 showShareDialog = true
                             },
                             onRefreshDrive = {
-                                viewModel.refreshDriveSharedLists()
+                                viewModel.refreshDriveSharedLists(interactive = true)
+                            },
+                            onConnectDrive = {
+                                viewModel.connectGoogleDrive()
                             }
                         )
                     }
@@ -342,11 +375,14 @@ fun PTaskApp(
                         val activeListId = targetListIdForNewTask.ifBlank { currentSelectedList?.id ?: "" }
                         val activeSharedState = sharedListsMap[activeListId]
                         val activeSharedTask = activeSharedState?.file?.tasks?.find { it.id == taskToEdit?.id }
+                        val allAvailableLists = remember(lists, sharedListsMap) {
+                            (lists + sharedListsMap.values.map { it.file.toTodoList() }).distinctBy { it.id }
+                        }
 
                         TaskEditDialog(
                             taskToEdit = taskToEdit,
                             currentListId = activeListId.ifBlank { lists.firstOrNull()?.id ?: "" },
-                            availableLists = lists,
+                            availableLists = allAvailableLists,
                             sharedTask = activeSharedTask,
                             isReadOnly = activeSharedState?.isReadOnly ?: false,
                             onDismiss = { showTaskDialog = false },
@@ -378,20 +414,15 @@ fun PTaskApp(
                         )
                     }
 
-                    // Share List Dialog
+                    // Share List Dialog (1-step sharing flow)
                     if (showShareDialog && listToShare != null) {
                         val targetShared = sharedListsMap[listToShare!!.id]
                         ShareListDialog(
                             list = listToShare!!,
                             sharedFile = targetShared?.file,
-                            currentUserEmail = Firebase.auth.currentUser?.email.orEmpty(),
-                            isDriveConnected = true,
-                            onConnectDrive = { viewModel.refreshDriveSharedLists() },
-                            onShareToDrive = {
-                                viewModel.shareListToDrive(listToShare!!) { _, _ -> }
-                            },
-                            onInviteMember = { email, role ->
-                                viewModel.inviteMemberToSharedList(listToShare!!.id, email, role) { _, _ -> }
+                            currentUserEmail = viewModel.getCurrentUserEmail(),
+                            onOneStepShare = { email, role, onResult ->
+                                viewModel.shareListAndInviteOneStep(listToShare!!, email, role, onResult)
                             },
                             onUpdateRole = { memberEmail, newRole ->
                                 viewModel.updateMemberRole(listToShare!!.id, memberEmail, newRole)
@@ -433,7 +464,7 @@ fun PTaskApp(
                         SettingsSheet(
                             currentSettings = settings,
                             userAvatarColor = userAvatarColor,
-                            isDriveConnected = true,
+                            isDriveConnected = isDriveConnected,
                             onSaveSettings = { themeMode, biometric, sound ->
                                 viewModel.updateSettings(themeMode, biometric, sound)
                             },
@@ -441,7 +472,7 @@ fun PTaskApp(
                                 viewModel.setUserAvatarColor(hex)
                             },
                             onConnectDrive = {
-                                viewModel.refreshDriveSharedLists()
+                                viewModel.connectGoogleDrive()
                             },
                             onAddCategory = { name, callback ->
                                 viewModel.addCategory(name, callback)
@@ -466,7 +497,9 @@ fun PTaskApp(
                             },
                             onSignOut = {
                                 showSettingsSheet = false
-                                onSignOut()
+                                viewModel.onUserSignOut {
+                                    onSignOut()
+                                }
                             },
                             onDismiss = { showSettingsSheet = false }
                         )
@@ -483,4 +516,4 @@ fun OmniTaskApp(
     activity: FragmentActivity,
     onSignOut: () -> Unit,
     viewModel: TodoViewModel = viewModel()
-) = PTaskApp(activity, onSignOut, viewModel)
+) = PTaskApp(activity, "default", false, {}, onSignOut, viewModel)

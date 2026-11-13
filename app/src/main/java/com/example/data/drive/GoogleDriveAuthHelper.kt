@@ -46,6 +46,21 @@ object GoogleDriveAuthHelper {
     }
 
     /**
+     * Extracts the signed-in Google account from the ActivityResult Intent.
+     * This saves the account into GoogleSignIn.getLastSignedInAccount(context).
+     */
+    fun handleSignInResult(intent: Intent?): GoogleSignInAccount? {
+        if (intent == null) return null
+        return try {
+            val task = GoogleSignIn.getSignedInAccountFromIntent(intent)
+            task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed retrieving signed in account from intent: ${e.message}")
+            null
+        }
+    }
+
+    /**
      * Obtains a valid OAuth token for Google Drive API v3.
      * Must be called from a coroutine (runs on Dispatchers.IO).
      */

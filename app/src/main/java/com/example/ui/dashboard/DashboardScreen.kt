@@ -96,9 +96,12 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
+import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.Button
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import com.example.data.drive.DriveColorPalette
 import com.example.data.drive.SharedListState
 
@@ -111,6 +114,9 @@ fun DashboardScreen(
     selectedCategory: String?,
     availableCategories: List<String> = emptyList(),
     sharedListsMap: Map<String, SharedListState> = emptyMap(),
+    currentUserEmail: String = "",
+    isDriveConnected: Boolean = true,
+    isRefreshingDrive: Boolean = false,
     onSearchChange: (String) -> Unit,
     onCategoryChange: (String?) -> Unit,
     onSelectList: (TodoList) -> Unit,
@@ -123,7 +129,8 @@ fun DashboardScreen(
     onOpenVoiceNlp: () -> Unit,
     onOpenSettings: () -> Unit,
     onShareList: (TodoList) -> Unit = {},
-    onRefreshDrive: () -> Unit = {}
+    onRefreshDrive: () -> Unit = {},
+    onConnectDrive: () -> Unit = {}
 ) {
     var isSearchActive by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
@@ -143,11 +150,12 @@ fun DashboardScreen(
 
     // Filter lists by category
     val filteredLists = remember(lists, selectedCategory) {
-        if (selectedCategory == null || selectedCategory == "All") {
+        val base = if (selectedCategory == null || selectedCategory == "All") {
             lists
         } else {
             lists.filter { it.category.equals(selectedCategory, ignoreCase = true) }
         }
+        base.distinctBy { it.id }
     }
 
     // Filter tasks if searching
@@ -156,17 +164,17 @@ fun DashboardScreen(
         else allTasks.filter {
             it.title.contains(searchQuery, ignoreCase = true) ||
                     it.notes.contains(searchQuery, ignoreCase = true)
-        }
+        }.distinctBy { it.id }
     }
 
     // Quick upcoming incomplete tasks (keeps newly completed items for 1.5s before moving away)
     val upcomingTasks = remember(allTasks, recentlyCompleted.toMap()) {
-        allTasks.filter { !it.isCompleted || recentlyCompleted.containsKey(it.id) }.take(6)
+        allTasks.filter { !it.isCompleted || recentlyCompleted.containsKey(it.id) }.distinctBy { it.id }.take(6)
     }
 
     // Done today tasks
     val doneTodayTasks = remember(allTasks, recentlyCompleted.toMap()) {
-        allTasks.filter { it.isCompleted && !recentlyCompleted.containsKey(it.id) && isToday(it.completedAt) }
+        allTasks.filter { it.isCompleted && !recentlyCompleted.containsKey(it.id) && isToday(it.completedAt) }.distinctBy { it.id }
     }
 
     Scaffold(
@@ -250,13 +258,18 @@ fun DashboardScreen(
             }
         }
     ) { padding ->
-        LazyColumn(
+        PullToRefreshBox(
+            isRefreshing = isRefreshingDrive,
+            onRefresh = onRefreshDrive,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(padding)
         ) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
             // Search Input if active
             if (isSearchActive) {
                 item {
@@ -300,8 +313,9 @@ fun DashboardScreen(
                         )
                     }
                 } else {
-                    items(searchResults) { task ->
+                    items(searchResults, key = { "search_${it.id}" }) { task ->
                         val parentList = lists.find { it.id == task.listId }
+                            ?: sharedListsMap[task.listId]?.file?.toTodoList()
                         TaskSummaryItem(
                             task = task,
                             listName = parentList?.title ?: "P Task",
@@ -396,11 +410,13 @@ fun DashboardScreen(
                     val totalCount = tasksForList.size
                     val progress = if (totalCount > 0) completedCount.toFloat() / totalCount.toFloat() else 0f
 
+                    val isShared = sharedListsMap.containsKey(list.id)
                     TodoListCard(
                         list = list,
                         taskCount = totalCount,
                         completedCount = completedCount,
                         progress = progress,
+                        isShared = isShared,
                         onClick = { onSelectList(list) },
                         onShare = { onShareList(list) },
                         onEdit = { onEditList(list) },
@@ -408,9 +424,14 @@ fun DashboardScreen(
                     )
                 }
 
-                // Shared with me Section (Google Drive Shared Lists)
-                val sharedStates = sharedListsMap.values.toList()
-                if (sharedStates.isNotEmpty()) {
+                // Shared with me Section (Google Drive Shared Lists shared with me by others)
+                val currentEmailClean = currentUserEmail.trim().lowercase()
+                val sharedWithMeStates = sharedListsMap.values.filter { state ->
+                    val ownerEmail = state.file.ownerEmail.trim().lowercase()
+                    ownerEmail.isNotBlank() && (currentEmailClean.isBlank() || ownerEmail != currentEmailClean)
+                }.distinctBy { it.file.id }
+
+                if (sharedWithMeStates.isNotEmpty() || !isDriveConnected) {
                     item {
                         Spacer(modifier = Modifier.height(10.dp))
                         Row(
@@ -427,14 +448,63 @@ fun DashboardScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = "Shared with me (${sharedStates.size})",
+                                    text = if (sharedWithMeStates.isNotEmpty())
+                                        "Shared with me (${sharedWithMeStates.size})"
+                                    else
+                                        "Shared with me",
                                     style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                                 )
                             }
                         }
                     }
 
-                    items(sharedStates, key = { "shared_${it.file.id}" }) { state ->
+                    if (!isDriveConnected) {
+                        item {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+                                ),
+                                shape = RoundedCornerShape(16.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CloudQueue,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Connect Google Drive",
+                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                        )
+                                        Text(
+                                            text = "Grant Drive access to share lists or open lists shared with your Gmail.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Button(
+                                        onClick = onConnectDrive,
+                                        shape = RoundedCornerShape(12.dp),
+                                        modifier = Modifier.testTag("dashboard_connect_drive_btn")
+                                    ) {
+                                        Text("Connect")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    items(sharedWithMeStates, key = { "shared_${it.file.id}" }) { state ->
                         val tasksForList = state.file.tasks.filterNot { it.isDeleted }
                         val completedCount = tasksForList.count { it.isCompleted }
                         val totalCount = tasksForList.size
@@ -476,6 +546,7 @@ fun DashboardScreen(
 
                     items(upcomingTasks, key = { it.id }) { task ->
                         val parentList = lists.find { it.id == task.listId }
+                            ?: sharedListsMap[task.listId]?.file?.toTodoList()
                         TaskSummaryItem(
                             task = task,
                             listName = parentList?.title ?: "P Task",
@@ -521,6 +592,7 @@ fun DashboardScreen(
 
                     items(doneTodayTasks, key = { it.id }) { task ->
                         val parentList = lists.find { it.id == task.listId }
+                            ?: sharedListsMap[task.listId]?.file?.toTodoList()
                         TaskSummaryItem(
                             task = task,
                             listName = parentList?.title ?: "P Task",
@@ -536,6 +608,7 @@ fun DashboardScreen(
                 }
             }
         }
+        }
     }
 }
 
@@ -545,6 +618,7 @@ fun TodoListCard(
     taskCount: Int,
     completedCount: Int,
     progress: Float,
+    isShared: Boolean = false,
     onClick: () -> Unit,
     onShare: () -> Unit = {},
     onEdit: () -> Unit,
@@ -600,6 +674,15 @@ fun TodoListCard(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        if (isShared) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(
+                                imageVector = Icons.Default.Share,
+                                contentDescription = "Shared on Google Drive",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                         if (list.isPinned) {
                             Spacer(modifier = Modifier.width(6.dp))
                             Icon(
@@ -647,7 +730,7 @@ fun TodoListCard(
                         onDismissRequest = { menuExpanded = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Share on Google Drive") },
+                            text = { Text("Share") },
                             leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
                             onClick = {
                                 menuExpanded = false
@@ -860,7 +943,7 @@ fun SharedTodoListCard(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Share / Manage Members") },
+                            text = { Text("Share") },
                             leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
                             onClick = {
                                 menuExpanded = false

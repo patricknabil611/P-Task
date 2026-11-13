@@ -66,7 +66,8 @@ class GoogleDriveService(
                     return@withContext DriveApiResult.Error("Access token expired", isUnauthorized = true)
                 }
                 if (!response.isSuccessful) {
-                    return@withContext DriveApiResult.Error("Failed to find folder: HTTP ${response.code}")
+                    val err = response.body?.string()?.take(200).orEmpty()
+                    return@withContext DriveApiResult.Error("Failed to find folder: HTTP ${response.code} $err")
                 }
                 val body = response.body?.string().orEmpty()
                 val json = JSONObject(body)
@@ -99,7 +100,8 @@ class GoogleDriveService(
                     return@withContext DriveApiResult.Error("Access token expired", isUnauthorized = true)
                 }
                 if (!response.isSuccessful) {
-                    return@withContext DriveApiResult.Error("Failed to create '$FOLDER_NAME' folder: HTTP ${response.code}")
+                    val err = response.body?.string()?.take(200).orEmpty()
+                    return@withContext DriveApiResult.Error("Failed to create '$FOLDER_NAME' folder: HTTP ${response.code} $err")
                 }
                 val body = response.body?.string().orEmpty()
                 val folderId = JSONObject(body).getString("id")
@@ -115,9 +117,9 @@ class GoogleDriveService(
      * Search for all files that have appProperties ptask='sharedList'
      */
     suspend fun querySharedLists(token: String, currentUserEmail: String): DriveApiResult<List<DriveFileSummary>> = withContext(Dispatchers.IO) {
-        val query = "appProperties has { key='ptask' and value='sharedList' } and trashed = false"
-        val fields = "files(id,name,modifiedTime,capabilities,owners,trashed)"
-        val url = "$BASE_DRIVE_URL/files?q=${java.net.URLEncoder.encode(query, "UTF-8")}&fields=${java.net.URLEncoder.encode(fields, "UTF-8")}&pageSize=100"
+        val query = "trashed = false and (name contains 'ptask_list_' or properties has { key='ptask' and value='sharedList' } or appProperties has { key='ptask' and value='sharedList' })"
+        val fields = "files(id,name,modifiedTime,capabilities,owners,trashed,properties,appProperties,sharedWithMe)"
+        val url = "$BASE_DRIVE_URL/files?q=${java.net.URLEncoder.encode(query, "UTF-8")}&fields=${java.net.URLEncoder.encode(fields, "UTF-8")}&spaces=drive&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=100"
 
         val request = Request.Builder()
             .url(url)
@@ -131,7 +133,8 @@ class GoogleDriveService(
                     return@withContext DriveApiResult.Error("Unauthorized", isUnauthorized = true)
                 }
                 if (!response.isSuccessful) {
-                    return@withContext DriveApiResult.Error("Query failed: HTTP ${response.code}")
+                    val err = response.body?.string()?.take(200).orEmpty()
+                    return@withContext DriveApiResult.Error("Query failed: HTTP ${response.code} $err")
                 }
                 val body = response.body?.string().orEmpty()
                 val json = JSONObject(body)
@@ -178,7 +181,7 @@ class GoogleDriveService(
         currentUserEmail: String
     ): DriveApiResult<Pair<SharedTodoListFile, DriveFileSummary>> = withContext(Dispatchers.IO) {
         // Step 1: Get metadata
-        val metaUrl = "$BASE_DRIVE_URL/files/$fileId?fields=id,name,modifiedTime,capabilities,owners,permissions,trashed"
+        val metaUrl = "$BASE_DRIVE_URL/files/$fileId?fields=id,name,modifiedTime,capabilities,owners,permissions,trashed&supportsAllDrives=true"
         val metaRequest = Request.Builder()
             .url(metaUrl)
             .addHeader("Authorization", "Bearer $token")
@@ -222,7 +225,7 @@ class GoogleDriveService(
         }
 
         // Step 2: Download JSON file body
-        val downloadUrl = "$BASE_DRIVE_URL/files/$fileId?alt=media"
+        val downloadUrl = "$BASE_DRIVE_URL/files/$fileId?alt=media&supportsAllDrives=true"
         val downloadRequest = Request.Builder()
             .url(downloadUrl)
             .addHeader("Authorization", "Bearer $token")
@@ -265,18 +268,19 @@ class GoogleDriveService(
             put("parents", JSONArray().put(folderId))
             put("mimeType", "application/json")
             put("appProperties", JSONObject().put("ptask", "sharedList"))
+            put("properties", JSONObject().put("ptask", "sharedList"))
         }.toString()
 
         val contentString = sharedList.toJsonString()
 
         val multipartBody = MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
+            .setType("multipart/related".toMediaType())
             .addPart(metadataJson.toRequestBody(jsonMediaType))
             .addPart(contentString.toRequestBody(jsonMediaType))
             .build()
 
         val request = Request.Builder()
-            .url("$BASE_UPLOAD_URL?uploadType=multipart")
+            .url("$BASE_UPLOAD_URL?uploadType=multipart&supportsAllDrives=true")
             .addHeader("Authorization", "Bearer $token")
             .post(multipartBody)
             .build()
@@ -287,7 +291,8 @@ class GoogleDriveService(
                     return@withContext DriveApiResult.Error("Unauthorized", isUnauthorized = true)
                 }
                 if (!response.isSuccessful) {
-                    return@withContext DriveApiResult.Error("Failed to create file on Drive: HTTP ${response.code}")
+                    val err = response.body?.string()?.take(200).orEmpty()
+                    return@withContext DriveApiResult.Error("Failed to create file on Drive: HTTP ${response.code} $err")
                 }
                 val body = response.body?.string().orEmpty()
                 val fileId = JSONObject(body).getString("id")
@@ -311,7 +316,7 @@ class GoogleDriveService(
         val requestBody = contentString.toRequestBody(jsonMediaType)
 
         val request = Request.Builder()
-            .url("$BASE_UPLOAD_URL/$fileId?uploadType=media")
+            .url("$BASE_UPLOAD_URL/$fileId?uploadType=media&supportsAllDrives=true")
             .addHeader("Authorization", "Bearer $token")
             .patch(requestBody)
             .build()
@@ -325,7 +330,8 @@ class GoogleDriveService(
                     return@withContext DriveApiResult.Error("File not found or removed", isNotFound = true)
                 }
                 if (!response.isSuccessful) {
-                    return@withContext DriveApiResult.Error("Failed to update file: HTTP ${response.code}")
+                    val err = response.body?.string()?.take(200).orEmpty()
+                    return@withContext DriveApiResult.Error("Failed to update file: HTTP ${response.code} $err")
                 }
                 val body = response.body?.string().orEmpty()
                 val modifiedTime = JSONObject(body).optString("modifiedTime", "")
@@ -341,7 +347,7 @@ class GoogleDriveService(
      * Check modifiedTime of a file on Drive (used for 20s polling).
      */
     suspend fun getFileModifiedTime(token: String, fileId: String): DriveApiResult<String> = withContext(Dispatchers.IO) {
-        val url = "$BASE_DRIVE_URL/files/$fileId?fields=modifiedTime,trashed"
+        val url = "$BASE_DRIVE_URL/files/$fileId?fields=modifiedTime,trashed&supportsAllDrives=true"
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $token")
@@ -374,7 +380,8 @@ class GoogleDriveService(
         token: String,
         fileId: String,
         email: String,
-        role: String
+        role: String,
+        emailMessage: String = "You have been invited to collaborate on a shared todo list in P Task. Open the P Task app and check 'Shared with me'."
     ): DriveApiResult<String> = withContext(Dispatchers.IO) {
         val body = JSONObject().apply {
             put("role", role)
@@ -382,7 +389,8 @@ class GoogleDriveService(
             put("emailAddress", email.trim())
         }.toString().toRequestBody(jsonMediaType)
 
-        val url = "$BASE_DRIVE_URL/files/$fileId/permissions?sendNotificationEmail=true"
+        val encodedMsg = java.net.URLEncoder.encode(emailMessage, "UTF-8")
+        val url = "$BASE_DRIVE_URL/files/$fileId/permissions?sendNotificationEmail=true&emailMessage=$encodedMsg&supportsAllDrives=true"
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $token")
@@ -419,7 +427,7 @@ class GoogleDriveService(
             put("role", newRole)
         }.toString().toRequestBody(jsonMediaType)
 
-        val url = "$BASE_DRIVE_URL/files/$fileId/permissions/$permissionId"
+        val url = "$BASE_DRIVE_URL/files/$fileId/permissions/$permissionId?supportsAllDrives=true"
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $token")
@@ -447,7 +455,7 @@ class GoogleDriveService(
         fileId: String,
         permissionId: String
     ): DriveApiResult<Unit> = withContext(Dispatchers.IO) {
-        val url = "$BASE_DRIVE_URL/files/$fileId/permissions/$permissionId"
+        val url = "$BASE_DRIVE_URL/files/$fileId/permissions/$permissionId?supportsAllDrives=true"
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $token")
@@ -474,7 +482,7 @@ class GoogleDriveService(
         token: String,
         fileId: String
     ): DriveApiResult<Unit> = withContext(Dispatchers.IO) {
-        val url = "$BASE_DRIVE_URL/files/$fileId"
+        val url = "$BASE_DRIVE_URL/files/$fileId?supportsAllDrives=true"
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $token")
