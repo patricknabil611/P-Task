@@ -52,7 +52,10 @@ sealed interface NlpUiState {
 }
 
 sealed interface UndoAction {
-    data class DeletedTask(val task: TaskItem) : UndoAction
+    data class DeletedTask(
+        val task: TaskItem,
+        val eventId: Long = System.nanoTime()
+    ) : UndoAction
 }
 
 class TodoViewModel(application: Application) : AndroidViewModel(application) {
@@ -63,6 +66,7 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
     private val driveService = GoogleDriveService()
     private val syncManager = SharedListSyncManager(appContext, driveService, driveAuthHelper)
     private val geminiTaskParser = GeminiTaskParser()
+    private val settingsPrefs = appContext.getSharedPreferences("ptask_user_settings", android.content.Context.MODE_PRIVATE)
 
     val listsState: StateFlow<UiState<List<TodoList>>> = repository.observeLists()
         .map<List<TodoList>, UiState<List<TodoList>>> { UiState.Success(it) }
@@ -89,9 +93,8 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
-    val settingsState: StateFlow<UserSettings> = repository.observeSettings()
-        .catch { emit(UserSettings()) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UserSettings())
+    private val _settingsState = MutableStateFlow(loadLocalSettings())
+    val settingsState: StateFlow<UserSettings> = _settingsState.asStateFlow()
 
     val sharedLists: StateFlow<List<SharedListState>> = syncManager.sharedLists
 
@@ -123,9 +126,59 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.ensureDefaultListIfEmpty()
         }
+        viewModelScope.launch {
+            repository.observeSettings()
+                .catch { /* keep local settings if offline/error */ }
+                .collect { remote ->
+                    if (remote != null) {
+                        _settingsState.value = remote
+                        saveLocalSettings(remote)
+                    }
+                }
+        }
         if (_isDriveConnected.value) {
             refreshSharedLists()
         }
+    }
+
+    private fun settingsKeyPrefix(): String {
+        val uid = Firebase.auth.currentUser?.uid ?: "guest"
+        return "${uid}_"
+    }
+
+    private fun loadLocalSettings(): UserSettings {
+        val p = settingsPrefs
+        val prefix = settingsKeyPrefix()
+        val catsRaw = p.getString("${prefix}categories", null)
+        val cats = catsRaw?.split("\n")?.map { it.trim() }?.filter { it.isNotEmpty() }?.distinct()
+            ?.takeIf { it.isNotEmpty() } ?: DEFAULT_CATEGORIES
+        val defaultDark = p.getBoolean("last_dark_theme", false)
+        return UserSettings(
+            userId = Firebase.auth.currentUser?.uid.orEmpty(),
+            defaultSoundKey = p.getString("${prefix}sound_key", "chime") ?: "chime",
+            defaultReminderHour = p.getInt("${prefix}rem_hour", 9).coerceIn(0, 23),
+            defaultReminderMinute = p.getInt("${prefix}rem_min", 0).coerceIn(0, 59),
+            notificationDescription = p.getString("${prefix}notif_desc", "Scheduled P Task reminder")
+                ?: "Scheduled P Task reminder",
+            useDarkTheme = p.getBoolean("${prefix}dark_theme", defaultDark),
+            biometricEnabled = p.getBoolean("${prefix}biometric", true),
+            customCategories = cats
+        )
+    }
+
+    private fun saveLocalSettings(settings: UserSettings) {
+        val prefix = settingsKeyPrefix()
+        settingsPrefs.edit()
+            .putString("${prefix}sound_key", settings.defaultSoundKey)
+            .putInt("${prefix}rem_hour", settings.defaultReminderHour.coerceIn(0, 23))
+            .putInt("${prefix}rem_min", settings.defaultReminderMinute.coerceIn(0, 59))
+            .putString("${prefix}notif_desc", settings.notificationDescription)
+            .putBoolean("${prefix}dark_theme", settings.useDarkTheme)
+            .putBoolean("last_dark_theme", settings.useDarkTheme)
+            .putBoolean("${prefix}biometric", settings.biometricEnabled)
+            .putString("${prefix}categories", settings.customCategories.joinToString("\n"))
+            .apply()
+        NotificationHelper.saveNotificationDescription(appContext, settings.notificationDescription)
     }
 
     fun getCurrentUserEmail(): String {
@@ -288,7 +341,8 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
                             task.title,
                             listTitle,
                             task.reminderEpoch,
-                            task.reminderSoundKey
+                            task.reminderSoundKey,
+                            settingsState.value.notificationDescription
                         )
                     } else {
                         NotificationHelper.cancelReminder(appContext, savedId)
@@ -401,11 +455,12 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun commitParsedTask(listId: String, listTitle: String, parsed: ParsedTaskResult) {
+        val currentSettings = settingsState.value
         val dueEpoch = parsed.dueOffsetDays?.let { days ->
             Calendar.getInstance().apply {
                 add(Calendar.DAY_OF_YEAR, days)
-                set(Calendar.HOUR_OF_DAY, 18)
-                set(Calendar.MINUTE, 0)
+                set(Calendar.HOUR_OF_DAY, currentSettings.defaultReminderHour.coerceIn(0, 23))
+                set(Calendar.MINUTE, currentSettings.defaultReminderMinute.coerceIn(0, 59))
                 set(Calendar.SECOND, 0)
             }.timeInMillis
         } ?: 0L
@@ -417,7 +472,7 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
                 priority = parsed.priority,
                 category = parsed.category,
                 dueDateEpoch = dueEpoch,
-                reminderSoundKey = settingsState.value.defaultSoundKey
+                reminderSoundKey = currentSettings.defaultSoundKey
             ),
             listTitle = listTitle,
             isNew = true
@@ -426,9 +481,54 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateSettings(settings: UserSettings) {
+        _settingsState.value = settings
+        saveLocalSettings(settings)
         viewModelScope.launch {
             repository.saveSettings(settings)
                 .onFailure { _statusMessage.value = it.localizedMessage }
+        }
+    }
+
+    fun addCategory(name: String) {
+        val trimmed = name.trim().take(60)
+        if (trimmed.isEmpty()) return
+        val current = settingsState.value
+        val cats = current.customCategories.ifEmpty { DEFAULT_CATEGORIES }
+        if (cats.any { it.equals(trimmed, ignoreCase = true) }) {
+            _statusMessage.value = "Category \"$trimmed\" already exists."
+            return
+        }
+        updateSettings(current.copy(customCategories = cats + trimmed))
+    }
+
+    fun updateCategory(oldName: String, newName: String) {
+        val trimmed = newName.trim().take(60)
+        if (trimmed.isEmpty() || trimmed == oldName) return
+        val current = settingsState.value
+        val cats = current.customCategories.ifEmpty { DEFAULT_CATEGORIES }
+        if (cats.any { !it.equals(oldName, ignoreCase = false) && it.equals(trimmed, ignoreCase = true) }) {
+            _statusMessage.value = "Category \"$trimmed\" already exists."
+            return
+        }
+        val updatedCats = cats.map { if (it == oldName) trimmed else it }.distinct()
+        updateSettings(current.copy(customCategories = updatedCats))
+        viewModelScope.launch {
+            repository.replaceCategoryInTasks(oldName, trimmed)
+        }
+    }
+
+    fun deleteCategory(name: String) {
+        val current = settingsState.value
+        val cats = current.customCategories.ifEmpty { DEFAULT_CATEGORIES }
+        if (cats.size <= 1) {
+            _statusMessage.value = "Keep at least one category."
+            return
+        }
+        val remaining = cats.filterNot { it == name }
+        val fallback = remaining.firstOrNull() ?: "General"
+        updateSettings(current.copy(customCategories = remaining))
+        viewModelScope.launch {
+            repository.replaceCategoryInTasks(name, fallback)
         }
     }
 

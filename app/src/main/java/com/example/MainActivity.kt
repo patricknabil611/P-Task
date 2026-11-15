@@ -2,6 +2,7 @@ package com.example
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -9,9 +10,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -19,7 +24,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.credentials.CredentialManager
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -51,6 +58,7 @@ import com.example.ui.voice.VoiceNlpSheet
 import com.google.firebase.Firebase
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.auth
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : FragmentActivity() {
@@ -63,6 +71,19 @@ class MainActivity : FragmentActivity() {
 
         setContent {
             PTaskAppRoot(activity = this)
+        }
+    }
+}
+
+@Composable
+private fun ApplySystemBarAppearance(darkTheme: Boolean) {
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as? Activity)?.window ?: return@SideEffect
+            val controller = WindowCompat.getInsetsController(window, view)
+            controller.isAppearanceLightStatusBars = !darkTheme
+            controller.isAppearanceLightNavigationBars = !darkTheme
         }
     }
 }
@@ -99,7 +120,12 @@ private fun PTaskAppRoot(activity: FragmentActivity) {
 
     val user = currentUser
     if (user == null) {
-        PTaskTheme {
+        val lastDarkTheme = remember {
+            activity.getSharedPreferences("ptask_user_settings", Context.MODE_PRIVATE)
+                .getBoolean("last_dark_theme", false)
+        }
+        ApplySystemBarAppearance(darkTheme = lastDarkTheme)
+        PTaskTheme(darkTheme = lastDarkTheme) {
             AuthScreen(
                 onAuthSuccess = {
                     currentUser = Firebase.auth.currentUser
@@ -140,7 +166,7 @@ private fun AuthenticatedAppContent(
     val nlpState by viewModel.nlpState.collectAsStateWithLifecycle()
     val lastUndo by viewModel.lastUndo.collectAsStateWithLifecycle()
 
-    val snackbarHostState = remember { androidx.compose.material3.SnackbarHostState() }
+    val snackbarHostState = remember { SnackbarHostState() }
     val navController = rememberNavController()
 
     var showCreateListDialog by remember { mutableStateOf(false) }
@@ -173,7 +199,16 @@ private fun AuthenticatedAppContent(
     LaunchedEffect(statusMessage) {
         val msg = statusMessage
         if (!msg.isNullOrBlank()) {
-            snackbarHostState.showSnackbar(msg)
+            snackbarHostState.currentSnackbarData?.dismiss()
+            val dismissJob = launch {
+                delay(3_000L)
+                snackbarHostState.currentSnackbarData?.dismiss()
+            }
+            snackbarHostState.showSnackbar(
+                message = msg,
+                duration = SnackbarDuration.Indefinite
+            )
+            dismissJob.cancel()
             viewModel.clearStatusMessage()
         }
     }
@@ -188,11 +223,18 @@ private fun AuthenticatedAppContent(
     LaunchedEffect(lastUndo) {
         val action = lastUndo
         if (action is UndoAction.DeletedTask) {
+            snackbarHostState.currentSnackbarData?.dismiss()
+            val dismissJob = launch {
+                delay(3_000L)
+                snackbarHostState.currentSnackbarData?.dismiss()
+            }
             val result = snackbarHostState.showSnackbar(
                 message = "Deleted \"${action.task.title}\"",
-                actionLabel = "Undo"
+                actionLabel = "Undo",
+                duration = SnackbarDuration.Indefinite
             )
-            if (result == androidx.compose.material3.SnackbarResult.ActionPerformed) {
+            dismissJob.cancel()
+            if (result == SnackbarResult.ActionPerformed) {
                 val listTitle = allResolvedLists.find { it.id == action.task.listId }?.title ?: "List"
                 viewModel.undoLastDelete(listTitle)
             } else {
@@ -217,6 +259,8 @@ private fun AuthenticatedAppContent(
             navController.navigate("list/${list.id}")
         }
     }
+
+    ApplySystemBarAppearance(darkTheme = settings.useDarkTheme)
 
     PTaskTheme(darkTheme = settings.useDarkTheme) {
         NavHost(
@@ -343,6 +387,8 @@ private fun AuthenticatedAppContent(
                 listId = targetList.id,
                 categories = settings.customCategories,
                 defaultSoundKey = settings.defaultSoundKey,
+                defaultReminderHour = settings.defaultReminderHour,
+                defaultReminderMinute = settings.defaultReminderMinute,
                 onSave = { newTask ->
                     viewModel.saveTask(newTask, targetList.title, isNew = true)
                     addingTaskForList = null
@@ -357,6 +403,8 @@ private fun AuthenticatedAppContent(
                 existingTask = existingTask,
                 categories = settings.customCategories,
                 defaultSoundKey = settings.defaultSoundKey,
+                defaultReminderHour = settings.defaultReminderHour,
+                defaultReminderMinute = settings.defaultReminderMinute,
                 onSave = { updated ->
                     viewModel.saveTask(updated, targetList.title, isNew = false)
                     editingTaskPair = null
@@ -387,6 +435,9 @@ private fun AuthenticatedAppContent(
                 settings = settings,
                 isDriveConnected = isDriveConnected,
                 onUpdateSettings = { viewModel.updateSettings(it) },
+                onAddCategory = { viewModel.addCategory(it) },
+                onUpdateCategory = { oldName, newName -> viewModel.updateCategory(oldName, newName) },
+                onDeleteCategory = { viewModel.deleteCategory(it) },
                 onConnectDrive = { viewModel.requestDriveConnect() },
                 onExportBackup = { uri -> viewModel.exportBackup(uri) },
                 onImportBackup = { uri -> viewModel.importBackup(uri) },

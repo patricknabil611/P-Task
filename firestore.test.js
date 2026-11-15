@@ -117,3 +117,41 @@ test("Rejects shadow fields, invalid priority, and uid spoofing", async () => {
   const badPriority = { ...validTaskPayload(ALICE_UID, "list_1"), priority: "CRITICAL" };
   await assertFails(aliceDb.collection("users").doc(ALICE_UID).collection("tasks").doc("task_prio").set(badPriority));
 });
+
+test("Authenticated user can save and update settings with notification fields", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const prefsRef = aliceDb.collection("users").doc(ALICE_UID).collection("settings").doc("preferences");
+  await assertSucceeds(prefsRef.set({
+    userId: ALICE_UID,
+    defaultSoundKey: "chime",
+    defaultReminderHour: 9,
+    defaultReminderMinute: 30,
+    notificationDescription: "Daily task alert",
+    useDarkTheme: true,
+    biometricEnabled: true,
+    customCategories: ["General", "Work"],
+    updatedAt: serverTimestamp(),
+  }));
+  await assertSucceeds(prefsRef.set({
+    userId: ALICE_UID,
+    defaultSoundKey: "bell",
+    defaultReminderHour: 20,
+    defaultReminderMinute: 15,
+    notificationDescription: "Evening review",
+    useDarkTheme: false,
+    biometricEnabled: true,
+    customCategories: ["General", "Focus"],
+    updatedAt: serverTimestamp(),
+  }));
+  await assertFails(prefsRef.set({
+    userId: ALICE_UID,
+    defaultSoundKey: "bell",
+    defaultReminderHour: 25,
+    defaultReminderMinute: 0,
+    notificationDescription: "Invalid hour",
+    useDarkTheme: false,
+    biometricEnabled: true,
+    customCategories: ["General"],
+    updatedAt: serverTimestamp(),
+  }));
+});

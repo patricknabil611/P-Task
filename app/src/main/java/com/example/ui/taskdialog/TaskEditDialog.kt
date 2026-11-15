@@ -14,8 +14,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.CalendarToday
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -23,6 +25,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -41,13 +46,15 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun TaskEditDialog(
     listId: String,
     existingTask: TaskItem? = null,
     categories: List<String>,
     defaultSoundKey: String,
+    defaultReminderHour: Int = 9,
+    defaultReminderMinute: Int = 0,
     onSave: (TaskItem) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -60,9 +67,10 @@ fun TaskEditDialog(
     var dueDateEpoch by remember { mutableLongStateOf(existingTask?.dueDateEpoch ?: 0L) }
     var reminderEpoch by remember { mutableLongStateOf(existingTask?.reminderEpoch ?: 0L) }
     var soundKey by remember { mutableStateOf(existingTask?.reminderSoundKey ?: defaultSoundKey) }
+    var showReminderTimePicker by remember { mutableStateOf(false) }
 
     val availableCats = (categories.ifEmpty { DEFAULT_CATEGORIES } + category).distinct()
-    val dateFmt = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
+    val dateFmt = remember { SimpleDateFormat("MMM d, hh:mm a", Locale.getDefault()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -182,8 +190,21 @@ fun TaskEditDialog(
                     )
                     FilterChip(
                         selected = false,
-                        onClick = { reminderEpoch = offsetDaysMorning(1) },
-                        label = { Text("Tomorrow 9 AM") }
+                        onClick = {
+                            reminderEpoch = offsetDaysAtTime(
+                                days = 1,
+                                hour = defaultReminderHour,
+                                minute = defaultReminderMinute
+                            )
+                        },
+                        label = { Text("Tomorrow default") }
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = { showReminderTimePicker = true },
+                        leadingIcon = { Icon(Icons.Default.Schedule, contentDescription = null) },
+                        label = { Text("Pick Time") },
+                        modifier = Modifier.testTag("task_reminder_time_picker")
                     )
                 }
 
@@ -242,6 +263,51 @@ fun TaskEditDialog(
             }
         }
     )
+
+    if (showReminderTimePicker) {
+        val initialCal = Calendar.getInstance().apply {
+            if (reminderEpoch > 0L) {
+                timeInMillis = reminderEpoch
+            } else {
+                set(Calendar.HOUR_OF_DAY, defaultReminderHour.coerceIn(0, 23))
+                set(Calendar.MINUTE, defaultReminderMinute.coerceIn(0, 59))
+            }
+        }
+        val pickerState = rememberTimePickerState(
+            initialHour = initialCal.get(Calendar.HOUR_OF_DAY),
+            initialMinute = initialCal.get(Calendar.MINUTE),
+            is24Hour = false
+        )
+        AlertDialog(
+            onDismissRequest = { showReminderTimePicker = false },
+            title = { Text("Pick Reminder Time") },
+            text = { TimePicker(state = pickerState) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val cal = Calendar.getInstance().apply {
+                            set(Calendar.HOUR_OF_DAY, pickerState.hour)
+                            set(Calendar.MINUTE, pickerState.minute)
+                            set(Calendar.SECOND, 0)
+                            set(Calendar.MILLISECOND, 0)
+                            if (timeInMillis <= System.currentTimeMillis()) {
+                                add(Calendar.DAY_OF_YEAR, 1)
+                            }
+                        }
+                        reminderEpoch = cal.timeInMillis
+                        showReminderTimePicker = false
+                    }
+                ) {
+                    Text("Set Time")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showReminderTimePicker = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 private fun offsetDaysEndOfDay(days: Int): Long {
@@ -253,11 +319,11 @@ private fun offsetDaysEndOfDay(days: Int): Long {
     }.timeInMillis
 }
 
-private fun offsetDaysMorning(days: Int): Long {
+private fun offsetDaysAtTime(days: Int, hour: Int, minute: Int): Long {
     return Calendar.getInstance().apply {
         add(Calendar.DAY_OF_YEAR, days)
-        set(Calendar.HOUR_OF_DAY, 9)
-        set(Calendar.MINUTE, 0)
+        set(Calendar.HOUR_OF_DAY, hour.coerceIn(0, 23))
+        set(Calendar.MINUTE, minute.coerceIn(0, 59))
         set(Calendar.SECOND, 0)
     }.timeInMillis
 }

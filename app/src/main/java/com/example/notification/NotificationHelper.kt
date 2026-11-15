@@ -112,7 +112,8 @@ object NotificationHelper {
         taskTitle: String,
         listTitle: String,
         reminderEpoch: Long,
-        soundKey: String
+        soundKey: String,
+        description: String = getSavedNotificationDescription(context)
     ) {
         if (reminderEpoch <= System.currentTimeMillis()) return
 
@@ -122,6 +123,7 @@ object NotificationHelper {
             putExtra(ReminderAlarmReceiver.EXTRA_TASK_TITLE, taskTitle)
             putExtra(ReminderAlarmReceiver.EXTRA_LIST_TITLE, listTitle)
             putExtra(ReminderAlarmReceiver.EXTRA_SOUND_KEY, soundKey)
+            putExtra(ReminderAlarmReceiver.EXTRA_DESCRIPTION, description)
         }
 
         val requestCode = taskId.hashCode()
@@ -162,12 +164,25 @@ object NotificationHelper {
         }
     }
 
+    fun getSavedNotificationDescription(context: Context): String {
+        val prefs = context.getSharedPreferences("ptask_notification_prefs", Context.MODE_PRIVATE)
+        return prefs.getString("notification_description", "Scheduled P Task reminder")
+            ?.takeIf { it.isNotBlank() }
+            ?: "Scheduled P Task reminder"
+    }
+
+    fun saveNotificationDescription(context: Context, description: String) {
+        val prefs = context.getSharedPreferences("ptask_notification_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("notification_description", description.trim()).apply()
+    }
+
     fun showNotification(
         context: Context,
         taskId: String,
         title: String,
         listName: String,
-        soundKey: String
+        soundKey: String,
+        description: String = getSavedNotificationDescription(context)
     ) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -183,12 +198,15 @@ object NotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val resolvedDesc = description.ifBlank { getSavedNotificationDescription(context) }
+        val bigText = "$resolvedDesc\nTask: $title\nList: $listName"
+
         val notification = NotificationCompat.Builder(context, CHANNEL_ID_DEFAULT)
             .setSmallIcon(R.drawable.ic_launcher_fg_img)
-            .setContentTitle("P Task Reminder")
-            .setContentText(title)
+            .setContentTitle(title)
+            .setContentText(resolvedDesc)
             .setSubText(listName)
-            .setStyle(NotificationCompat.BigTextStyle().bigText("Task: $title\nList: $listName"))
+            .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(contentPendingIntent)

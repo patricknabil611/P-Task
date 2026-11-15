@@ -44,6 +44,9 @@ data class TaskItem(
 data class UserSettings(
     val userId: String = "",
     val defaultSoundKey: String = "chime",
+    val defaultReminderHour: Int = 9,
+    val defaultReminderMinute: Int = 0,
+    val notificationDescription: String = "Scheduled P Task reminder",
     val useDarkTheme: Boolean = false,
     val biometricEnabled: Boolean = true,
     val customCategories: List<String> = DEFAULT_CATEGORIES,

@@ -60,9 +60,24 @@ class TodoRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertTrue(observedTasks.any { it.id == taskId && it.title == "Ship v26.06.26.2" })
 
         val settingsSave = withTimeout(DEFAULT_TIMEOUT_MS) {
-            repository.saveSettings(UserSettings(useDarkTheme = true, biometricEnabled = false))
+            repository.saveSettings(
+                UserSettings(
+                    useDarkTheme = true,
+                    biometricEnabled = false,
+                    defaultSoundKey = "bell",
+                    defaultReminderHour = 8,
+                    defaultReminderMinute = 45,
+                    notificationDescription = "Morning task ping",
+                    customCategories = listOf("General", "Focus")
+                )
+            )
         }
-        assertTrue(settingsSave.isSuccess)
+        assertTrue("saveSettings failed: ${settingsSave.exceptionOrNull()}", settingsSave.isSuccess)
+
+        val renameRes = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repository.replaceCategoryInTasks("Work", "Focus")
+        }
+        assertTrue("replaceCategoryInTasks failed: ${renameRes.exceptionOrNull()}", renameRes.isSuccess)
     }
 
     @Test

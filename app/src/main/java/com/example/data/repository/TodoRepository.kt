@@ -85,14 +85,18 @@ class TodoRepository(
         )
     }
 
-    fun observeSettings(): Flow<UserSettings> = flow {
+    fun observeSettings(): Flow<UserSettings?> = flow {
         val uid = requireUserId()
         val path = "users/$uid/settings/preferences"
         emitAll(
             db.collection("users").document(uid).collection("settings").document("preferences")
                 .snapshots()
                 .map { snapshot ->
-                    snapshot.toObject(UserSettings::class.java) ?: UserSettings(userId = uid)
+                    if (snapshot.exists()) {
+                        snapshot.toObject(UserSettings::class.java)
+                    } else {
+                        null
+                    }
                 }
                 .catch { error ->
                     val firestoreError = generateSequence(error) { it.cause }
@@ -322,6 +326,9 @@ class TodoRepository(
         val payload = mapOf(
             "userId" to uid,
             "defaultSoundKey" to settings.defaultSoundKey.ifBlank { "chime" }.take(40),
+            "defaultReminderHour" to settings.defaultReminderHour.coerceIn(0, 23),
+            "defaultReminderMinute" to settings.defaultReminderMinute.coerceIn(0, 59),
+            "notificationDescription" to settings.notificationDescription.trim().take(200),
             "useDarkTheme" to settings.useDarkTheme,
             "biometricEnabled" to settings.biometricEnabled,
             "customCategories" to categories,
@@ -334,6 +341,36 @@ class TodoRepository(
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.WRITE, docRef.path)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun replaceCategoryInTasks(oldCategory: String, newCategory: String): Result<Unit> {
+        val uid = requireUserId()
+        val target = newCategory.trim().ifBlank { "General" }.take(60)
+        return try {
+            val snap = db.collection("users").document(uid).collection("tasks")
+                .whereEqualTo("category", oldCategory)
+                .get()
+                .await()
+            if (!snap.isEmpty) {
+                val batch = db.batch()
+                for (doc in snap.documents) {
+                    batch.update(
+                        doc.reference,
+                        mapOf(
+                            "category" to target,
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    )
+                }
+                batch.commit().await()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "users/$uid/tasks")
             Result.failure(e)
         }
     }

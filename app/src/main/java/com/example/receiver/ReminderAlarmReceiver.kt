@@ -11,6 +11,7 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
         const val EXTRA_TASK_TITLE = "extra_task_title"
         const val EXTRA_LIST_TITLE = "extra_list_title"
         const val EXTRA_SOUND_KEY = "extra_sound_key"
+        const val EXTRA_DESCRIPTION = "extra_description"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -18,13 +19,16 @@ class ReminderAlarmReceiver : BroadcastReceiver() {
         val taskTitle = intent.getStringExtra(EXTRA_TASK_TITLE) ?: "Task Reminder"
         val listTitle = intent.getStringExtra(EXTRA_LIST_TITLE) ?: "P Task"
         val soundKey = intent.getStringExtra(EXTRA_SOUND_KEY) ?: "chime"
+        val description = intent.getStringExtra(EXTRA_DESCRIPTION)
+            ?: NotificationHelper.getSavedNotificationDescription(context)
         NotificationHelper.createNotificationChannels(context)
         NotificationHelper.showNotification(
             context = context,
             taskId = taskId,
             title = taskTitle,
             listName = listTitle,
-            soundKey = soundKey
+            soundKey = soundKey,
+            description = description
         )
     }
 }

@@ -60,6 +60,9 @@ service cloud.firestore {
     function isValidUserSettings(data, userId) {
       return data.userId is string && data.userId == userId &&
              data.defaultSoundKey is string && data.defaultSoundKey.size() >= 1 && data.defaultSoundKey.size() <= 40 &&
+             data.defaultReminderHour is int && data.defaultReminderHour >= 0 && data.defaultReminderHour <= 23 &&
+             data.defaultReminderMinute is int && data.defaultReminderMinute >= 0 && data.defaultReminderMinute <= 59 &&
+             data.notificationDescription is string && data.notificationDescription.size() <= 200 &&
              data.useDarkTheme is bool &&
              data.biometricEnabled is bool &&
              data.customCategories is list && data.customCategories.size() <= 30 &&
@@ -113,15 +116,16 @@ service cloud.firestore {
 
       allow create: if isOwner(userId) &&
                        isValidId(settingId) &&
-                       incoming().keys().hasAll(['userId', 'defaultSoundKey', 'useDarkTheme', 'biometricEnabled', 'customCategories', 'updatedAt']) &&
-                       incoming().keys().hasOnly(['userId', 'defaultSoundKey', 'useDarkTheme', 'biometricEnabled', 'customCategories', 'updatedAt']) &&
+                       incoming().keys().hasAll(['userId', 'defaultSoundKey', 'defaultReminderHour', 'defaultReminderMinute', 'notificationDescription', 'useDarkTheme', 'biometricEnabled', 'customCategories', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'defaultSoundKey', 'defaultReminderHour', 'defaultReminderMinute', 'notificationDescription', 'useDarkTheme', 'biometricEnabled', 'customCategories', 'updatedAt']) &&
                        isValidUserSettings(incoming(), userId);
 
       allow update: if isOwner(userId) &&
                        isValidId(settingId) &&
-                       incoming().userId == existing().userId &&
-                       isValidUserSettings(incoming(), userId) &&
-                       incoming().diff(existing()).affectedKeys().hasOnly(['defaultSoundKey', 'useDarkTheme', 'biometricEnabled', 'customCategories', 'updatedAt']);
+                       incoming().userId == userId &&
+                       incoming().keys().hasAll(['userId', 'defaultSoundKey', 'defaultReminderHour', 'defaultReminderMinute', 'notificationDescription', 'useDarkTheme', 'biometricEnabled', 'customCategories', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'defaultSoundKey', 'defaultReminderHour', 'defaultReminderMinute', 'notificationDescription', 'useDarkTheme', 'biometricEnabled', 'customCategories', 'updatedAt']) &&
+                       isValidUserSettings(incoming(), userId);
 
       allow delete: if isOwner(userId) && isValidId(settingId);
     }
