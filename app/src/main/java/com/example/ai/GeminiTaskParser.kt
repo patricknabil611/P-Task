@@ -9,114 +9,98 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
-import java.util.Date
 
 data class ParsedTaskResult(
     val title: String,
-    val targetList: String,
-    val priority: String,
-    val dueDateOffsetHours: Int,
-    val notes: String,
-    val category: String
+    val priority: String = "MEDIUM",
+    val category: String = "General",
+    val notes: String = "",
+    val dueOffsetDays: Int? = null
 )
 
-object GeminiTaskParser {
-    private const val TAG = "GeminiTaskParser"
+class GeminiTaskParser {
 
-    private val taskSchema = Schema.obj(
+    private val schema = Schema.obj(
         properties = mapOf(
-            "title" to Schema.string(description = "Clean, concise title of the task"),
-            "targetList" to Schema.string(description = "Best matching list title (e.g. 'Personal Todo daily', 'Togo list', 'Todo El sha2a', 'To travel List', 'To buy')"),
-            "priority" to Schema.string(description = "One of LOW, MEDIUM, HIGH, URGENT"),
-            "dueDateOffsetHours" to Schema.integer(description = "Hours from right now when this task is due (e.g. 24 for tomorrow, 0 if no specific due date)"),
-            "notes" to Schema.string(description = "Additional context or details mentioned"),
-            "category" to Schema.string(description = "Category tag like Personal, Home, Errands, Travel, Shopping, Work")
+            "title" to Schema.string(description = "Clean, concise action item title"),
+            "priority" to Schema.enumeration(
+                values = listOf("URGENT", "HIGH", "MEDIUM", "LOW"),
+                description = "Task urgency level"
+            ),
+            "category" to Schema.string(description = "Best matching category"),
+            "notes" to Schema.string(description = "Optional extra details"),
+            "dueOffsetDays" to Schema.integer(
+                description = "Days from today if a due date was mentioned (0=today, 1=tomorrow), or null",
+                nullable = true
+            )
         ),
-        optionalProperties = listOf("notes")
+        optionalProperties = listOf("notes", "dueOffsetDays")
     )
-
-    private val config = generationConfig {
-        responseMimeType = "application/json"
-        responseSchema = taskSchema
-    }
 
     private val model by lazy {
         Firebase.ai.generativeModel(
             modelName = "gemini-3.8-flash",
-            generationConfig = config
+            generationConfig = generationConfig {
+                responseMimeType = "application/json"
+                responseSchema = schema
+            }
         )
     }
 
-    suspend fun parseNaturalLanguageTask(
-        userInput: String,
-        existingListTitles: List<String>,
-        availableCategories: List<String> = emptyList()
+    suspend fun parseTaskInput(
+        naturalText: String,
+        availableCategories: List<String>
     ): Result<ParsedTaskResult> {
+        val cleaned = naturalText.trim()
+        if (cleaned.isEmpty()) {
+            return Result.failure(IllegalArgumentException("Please enter or speak a task first."))
+        }
+
+        val prompt = buildString {
+            appendLine("Convert the following user task utterance into a structured task JSON.")
+            appendLine("Available categories: ${availableCategories.joinToString(", ")}.")
+            appendLine("Choose the closest category from the list above, or 'General'.")
+            appendLine("Utterance: \"$cleaned\"")
+        }
+
         return try {
-            val listsContext = if (existingListTitles.isNotEmpty()) {
-                "Existing user lists: ${existingListTitles.joinToString(", ")}."
-            } else {
-                "Standard lists: Personal Todo daily, Togo list, Todo El sha2a, To travel List, To buy."
-            }
-
-            val categoriesContext = if (availableCategories.isNotEmpty()) {
-                "Available categories: ${availableCategories.joinToString(", ")}."
-            } else {
-                "Available categories: Personal, Home, Errands, Travel, Shopping, Work."
-            }
-
-            val prompt = """
-                You are a smart task parser for P Task todo app.
-                User input: "$userInput"
-                Current date/time context: ${Date()}
-                $listsContext
-                $categoriesContext
-                
-                Analyze the input and extract:
-                1. title: The main action or item.
-                2. targetList: The most appropriate list from the user's lists (e.g. if household chore or cleaning, use 'Todo El sha2a'; if shopping/buying, use 'To buy'; if travel/flight/packing, use 'To travel List'; if quick errand/on the go, use 'Togo list'; otherwise 'Personal Todo daily').
-                3. priority: LOW, MEDIUM, HIGH, or URGENT based on urgency words.
-                4. dueDateOffsetHours: estimated hours from now (e.g., if user says 'tomorrow' give 24, 'tonight' give 8, 'in 2 hours' give 2, or 0 if none).
-                5. notes: any details, instructions, or subitems.
-                6. category: pick the best matching category from the available categories list.
-            """.trimIndent()
-
             val response = withTimeout(45_000L) {
                 model.generateContent(prompt)
             }
-
-            val jsonString = response.text
-                ?: throw IllegalStateException("Gemini model returned empty response.")
-
-            val json = JSONObject(jsonString)
-            val fallbackCategory = availableCategories.firstOrNull() ?: "Personal"
-            val parsedCategory = json.optString("category", fallbackCategory)
-            val resolvedCategory = if (availableCategories.isNotEmpty() && !availableCategories.contains(parsedCategory)) {
-                availableCategories.firstOrNull { it.equals(parsedCategory, ignoreCase = true) } ?: fallbackCategory
-            } else {
-                parsedCategory
+            val jsonText = response.text ?: throw IllegalStateException("Empty response from Gemini.")
+            val obj = JSONObject(jsonText)
+            val title = obj.optString("title", cleaned).trim().ifEmpty { cleaned }
+            val priority = obj.optString("priority", "MEDIUM").uppercase().let {
+                if (it in listOf("URGENT", "HIGH", "MEDIUM", "LOW")) it else "MEDIUM"
             }
-
-            val result = ParsedTaskResult(
-                title = json.optString("title", userInput),
-                targetList = json.optString("targetList", "Personal Todo daily"),
-                priority = json.optString("priority", "MEDIUM").uppercase().let {
-                    if (it in listOf("LOW", "MEDIUM", "HIGH", "URGENT")) it else "MEDIUM"
-                },
-                dueDateOffsetHours = json.optInt("dueDateOffsetHours", 0),
-                notes = json.optString("notes", ""),
-                category = resolvedCategory
+            val category = obj.optString("category", "General").trim().ifEmpty { "General" }
+            val notes = obj.optString("notes", "").trim()
+            val dueOffset = if (obj.has("dueOffsetDays") && !obj.isNull("dueOffsetDays")) {
+                obj.optInt("dueOffsetDays", 0).coerceAtLeast(0)
+            } else {
+                null
+            }
+            Result.success(
+                ParsedTaskResult(
+                    title = title,
+                    priority = priority,
+                    category = category,
+                    notes = notes,
+                    dueOffsetDays = dueOffset
+                )
             )
-
-            Result.success(result)
         } catch (e: TimeoutCancellationException) {
-            Log.e(TAG, "Gemini NLP parsing timed out", e)
+            Log.e(TAG, "Gemini task parsing timed out", e)
             Result.failure(Exception("AI task parsing timed out. Please try again."))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.e(TAG, "Gemini NLP parsing failed", e)
-            Result.failure(e)
+            Log.e(TAG, "Gemini task parsing failed", e)
+            Result.failure(Exception(e.localizedMessage ?: "AI parsing failed."))
         }
+    }
+
+    private companion object {
+        const val TAG = "GeminiTaskParser"
     }
 }

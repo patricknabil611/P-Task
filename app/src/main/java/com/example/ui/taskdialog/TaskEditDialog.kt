@@ -1,44 +1,28 @@
 package com.example.ui.taskdialog
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.CalendarToday
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.DatePicker
-import androidx.compose.material3.DatePickerDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TimePicker
-import androidx.compose.material3.rememberDatePickerState
-import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -47,376 +31,233 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.data.model.DEFAULT_CATEGORIES
 import com.example.data.model.TaskItem
-import com.example.data.model.TodoList
 import com.example.notification.NotificationHelper
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
-import com.example.data.model.SharedTaskItem
-
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun TaskEditDialog(
-    taskToEdit: TaskItem?,
-    currentListId: String,
-    availableLists: List<TodoList>,
-    sharedTask: SharedTaskItem? = null,
-    isReadOnly: Boolean = false,
-    onDismiss: () -> Unit,
-    onSaveTask: (TaskItem, String) -> Unit
+    listId: String,
+    existingTask: TaskItem? = null,
+    categories: List<String>,
+    defaultSoundKey: String,
+    onSave: (TaskItem) -> Unit,
+    onDismiss: () -> Unit
 ) {
-    var title by remember { mutableStateOf(taskToEdit?.title ?: "") }
-    var notes by remember { mutableStateOf(taskToEdit?.notes ?: "") }
-    var selectedListId by remember { mutableStateOf(taskToEdit?.listId?.ifBlank { currentListId } ?: currentListId) }
-    var priority by remember { mutableStateOf(taskToEdit?.priority ?: "MEDIUM") }
-    var dueDateEpoch by remember { mutableLongStateOf(taskToEdit?.dueDateEpoch ?: 0L) }
-    var reminderEpoch by remember { mutableLongStateOf(taskToEdit?.reminderEpoch ?: 0L) }
-    var reminderSound by remember { mutableStateOf(taskToEdit?.reminderSound ?: "chime") }
-    var category by remember { mutableStateOf(taskToEdit?.category ?: "General") }
+    var title by remember { mutableStateOf(existingTask?.title.orEmpty()) }
+    var notes by remember { mutableStateOf(existingTask?.notes.orEmpty()) }
+    var priority by remember { mutableStateOf(existingTask?.priority ?: "MEDIUM") }
+    var category by remember {
+        mutableStateOf(existingTask?.category ?: categories.firstOrNull() ?: "General")
+    }
+    var dueDateEpoch by remember { mutableLongStateOf(existingTask?.dueDateEpoch ?: 0L) }
+    var reminderEpoch by remember { mutableLongStateOf(existingTask?.reminderEpoch ?: 0L) }
+    var soundKey by remember { mutableStateOf(existingTask?.reminderSoundKey ?: defaultSoundKey) }
 
-    var showDatePicker by remember { mutableStateOf(false) }
-    var showTimePicker by remember { mutableStateOf(false) }
-
-    val datePickerState = rememberDatePickerState()
-    val timePickerState = rememberTimePickerState()
-
-    val dateFormat = remember { SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()) }
-    val timeFormat = remember { SimpleDateFormat("hh:mm a", Locale.getDefault()) }
+    val availableCats = (categories.ifEmpty { DEFAULT_CATEGORIES } + category).distinct()
+    val dateFmt = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = if (taskToEdit == null) "New Task" else "Edit Task",
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                )
-                IconButton(onClick = onDismiss) {
-                    Icon(imageVector = Icons.Default.Close, contentDescription = "Close")
-                }
-            }
-        },
+        title = { Text(if (existingTask == null) "New Task" else "Edit Task") },
         text = {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                if (sharedTask != null) {
-                    androidx.compose.material3.Card(
-                        colors = androidx.compose.material3.CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
-                        ),
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            if (sharedTask.createdByName.isNotBlank() || sharedTask.createdBy.isNotBlank()) {
-                                Text(
-                                    text = "Created by: ${sharedTask.createdByName.ifBlank { sharedTask.createdBy }}",
-                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                            if (sharedTask.updatedByName.isNotBlank() || sharedTask.updatedBy.isNotBlank()) {
-                                val relTime = when {
-                                    System.currentTimeMillis() - sharedTask.updatedAt < 60_000L -> "just now"
-                                    System.currentTimeMillis() - sharedTask.updatedAt < 3600_000L -> "${(System.currentTimeMillis() - sharedTask.updatedAt) / 60_000L}m ago"
-                                    System.currentTimeMillis() - sharedTask.updatedAt < 86400_000L -> "${(System.currentTimeMillis() - sharedTask.updatedAt) / 3600_000L}h ago"
-                                    else -> SimpleDateFormat("MMM d", Locale.getDefault()).format(Date(sharedTask.updatedAt))
-                                }
-                                Text(
-                                    text = "Last updated by: ${sharedTask.updatedByName.ifBlank { sharedTask.updatedBy }} ($relTime)",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            if (isReadOnly) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "View only – you have viewer permissions on this list",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Task Title
                 OutlinedTextField(
                     value = title,
-                    onValueChange = { if (!isReadOnly) title = it },
-                    readOnly = isReadOnly,
-                    label = { Text("Task Title *") },
-                    placeholder = { Text("e.g. Buy fresh milk") },
+                    onValueChange = { title = it },
+                    label = { Text("Task title") },
+                    singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("task_title_input"),
-                    shape = RoundedCornerShape(12.dp),
-                    singleLine = true
+                        .testTag("task_title_input")
                 )
 
-                // List Selector
-                if (availableLists.isNotEmpty()) {
-                    Text(
-                        text = "Assign to List",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        availableLists.forEach { list ->
-                            FilterChip(
-                                selected = selectedListId == list.id,
-                                onClick = { selectedListId = list.id },
-                                label = { Text(list.title) },
-                                shape = RoundedCornerShape(10.dp)
-                            )
-                        }
-                    }
-                }
-
-                // Priority Selection
-                Text(
-                    text = "Priority Level",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    listOf(
-                        "LOW" to Color(0xFF10B981),
-                        "MEDIUM" to Color(0xFF6366F1),
-                        "HIGH" to Color(0xFFF59E0B),
-                        "URGENT" to Color(0xFFEF4444)
-                    ).forEach { (pKey, color) ->
-                        FilterChip(
-                            selected = priority == pKey,
-                            onClick = { priority = pKey },
-                            label = { Text(pKey) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = color.copy(alpha = 0.25f),
-                                selectedLabelColor = color
-                            ),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
-
-                // Due Date
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                        .clickable { showDatePicker = true }
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.CalendarToday,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(text = "Due Date", style = MaterialTheme.typography.labelMedium)
-                            Text(
-                                text = if (dueDateEpoch > 0) dateFormat.format(Date(dueDateEpoch)) else "No due date set",
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
-                            )
-                        }
-                    }
-                    if (dueDateEpoch > 0) {
-                        IconButton(onClick = { dueDateEpoch = 0L }, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Clear date", modifier = Modifier.size(16.dp))
-                        }
-                    }
-                }
-
-                // Reminder & Sound
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                        .clickable { showTimePicker = true }
-                        .padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Alarm,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(text = "Reminder Time", style = MaterialTheme.typography.labelMedium)
-                            Text(
-                                text = if (reminderEpoch > 0) timeFormat.format(Date(reminderEpoch)) else "No reminder scheduled",
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
-                            )
-                        }
-                    }
-                    if (reminderEpoch > 0) {
-                        IconButton(onClick = { reminderEpoch = 0L }, modifier = Modifier.size(28.dp)) {
-                            Icon(Icons.Default.Close, contentDescription = "Clear reminder", modifier = Modifier.size(16.dp))
-                        }
-                    }
-                }
-
-                // Reminder Alert Sound Picker
-                Text(
-                    text = "Notification Alert Sound",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    NotificationHelper.AVAILABLE_SOUNDS.forEach { soundOption ->
-                        FilterChip(
-                            selected = reminderSound == soundOption.key,
-                            onClick = {
-                                reminderSound = soundOption.key
-                                NotificationHelper.playSoundPreview(soundOption.key)
-                            },
-                            label = { Text(soundOption.label) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.VolumeUp,
-                                    contentDescription = "Preview sound",
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            },
-                            shape = RoundedCornerShape(10.dp)
-                        )
-                    }
-                }
-
-                // Notes
                 OutlinedTextField(
                     value = notes,
                     onValueChange = { notes = it },
-                    label = { Text("Notes or Details") },
-                    placeholder = { Text("Add instructions, items, or checklists") },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
+                    label = { Text("Notes (optional)") },
                     minLines = 2,
-                    maxLines = 4
+                    maxLines = 4,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("task_notes_input")
                 )
+
+                Text("Priority", style = MaterialTheme.typography.labelMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("URGENT", "HIGH", "MEDIUM", "LOW").forEach { level ->
+                        FilterChip(
+                            selected = priority == level,
+                            onClick = { priority = level },
+                            label = { Text(level) }
+                        )
+                    }
+                }
+
+                Text("Category", style = MaterialTheme.typography.labelMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    availableCats.forEach { cat ->
+                        FilterChip(
+                            selected = category == cat,
+                            onClick = { category = cat },
+                            label = { Text(cat) }
+                        )
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CalendarToday, contentDescription = null)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (dueDateEpoch > 0L) {
+                            "Due: ${dateFmt.format(Date(dueDateEpoch))}"
+                        } else {
+                            "Due Date: None"
+                        },
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = dueDateEpoch == 0L,
+                        onClick = { dueDateEpoch = 0L },
+                        label = { Text("None") }
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = { dueDateEpoch = offsetDaysEndOfDay(0) },
+                        label = { Text("Today") }
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = { dueDateEpoch = offsetDaysEndOfDay(1) },
+                        label = { Text("Tomorrow") }
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = { dueDateEpoch = offsetDaysEndOfDay(7) },
+                        label = { Text("+1 Week") }
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Alarm, contentDescription = null)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (reminderEpoch > 0L) {
+                            "Reminder: ${dateFmt.format(Date(reminderEpoch))}"
+                        } else {
+                            "Reminder: Off"
+                        },
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = reminderEpoch == 0L,
+                        onClick = { reminderEpoch = 0L },
+                        label = { Text("Off") }
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = { reminderEpoch = System.currentTimeMillis() + 3_600_000L },
+                        label = { Text("In 1 hr") }
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = { reminderEpoch = System.currentTimeMillis() + 10_800_000L },
+                        label = { Text("In 3 hrs") }
+                    )
+                    FilterChip(
+                        selected = false,
+                        onClick = { reminderEpoch = offsetDaysMorning(1) },
+                        label = { Text("Tomorrow 9 AM") }
+                    )
+                }
+
+                if (reminderEpoch > 0L) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Alert Sound", style = MaterialTheme.typography.labelMedium)
+                        IconButton(onClick = { NotificationHelper.playSoundPreview(soundKey) }) {
+                            Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Preview sound")
+                        }
+                    }
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        NotificationHelper.AVAILABLE_SOUNDS.forEach { option ->
+                            FilterChip(
+                                selected = soundKey == option.key,
+                                onClick = {
+                                    soundKey = option.key
+                                    NotificationHelper.playSoundPreview(option.key)
+                                },
+                                label = { Text(option.label) }
+                            )
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
                     if (title.isNotBlank()) {
-                        val updated = (taskToEdit ?: TaskItem()).copy(
+                        val saved = (existingTask ?: TaskItem(listId = listId)).copy(
+                            listId = listId,
                             title = title.trim(),
                             notes = notes.trim(),
-                            listId = selectedListId,
                             priority = priority,
+                            category = category,
                             dueDateEpoch = dueDateEpoch,
                             reminderEpoch = reminderEpoch,
-                            reminderSound = reminderSound,
-                            category = category
+                            reminderSoundKey = soundKey
                         )
-                        val targetListTitle = availableLists.find { it.id == selectedListId }?.title ?: "P Task"
-                        onSaveTask(updated, targetListTitle)
+                        onSave(saved)
                     }
                 },
-                enabled = title.isNotBlank() && !isReadOnly,
+                enabled = title.isNotBlank(),
                 modifier = Modifier.testTag("save_task_button")
             ) {
-                Text(if (isReadOnly) "View Only" else "Save Task")
+                Text("Save")
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            OutlinedButton(onClick = onDismiss) {
                 Text("Cancel")
             }
         }
     )
+}
 
-    // Date Picker Dialog
-    if (showDatePicker) {
-        DatePickerDialog(
-            onDismissRequest = { showDatePicker = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    datePickerState.selectedDateMillis?.let {
-                        dueDateEpoch = it
-                    }
-                    showDatePicker = false
-                }) {
-                    Text("OK")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDatePicker = false }) {
-                    Text("Cancel")
-                }
-            }
-        ) {
-            DatePicker(state = datePickerState)
-        }
-    }
+private fun offsetDaysEndOfDay(days: Int): Long {
+    return Calendar.getInstance().apply {
+        add(Calendar.DAY_OF_YEAR, days)
+        set(Calendar.HOUR_OF_DAY, 20)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+    }.timeInMillis
+}
 
-    // Time Picker Dialog
-    if (showTimePicker) {
-        AlertDialog(
-            onDismissRequest = { showTimePicker = false },
-            title = { Text("Choose Reminder Time") },
-            text = {
-                Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth()) {
-                    TimePicker(state = timePickerState)
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val cal = Calendar.getInstance()
-                    if (dueDateEpoch > 0) {
-                        cal.timeInMillis = dueDateEpoch
-                    }
-                    cal.set(Calendar.HOUR_OF_DAY, timePickerState.hour)
-                    cal.set(Calendar.MINUTE, timePickerState.minute)
-                    cal.set(Calendar.SECOND, 0)
-                    reminderEpoch = cal.timeInMillis
-                    showTimePicker = false
-                }) {
-                    Text("Set Reminder")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showTimePicker = false }) {
-                    Text("Cancel")
-                }
-            }
-        )
-    }
+private fun offsetDaysMorning(days: Int): Long {
+    return Calendar.getInstance().apply {
+        add(Calendar.DAY_OF_YEAR, days)
+        set(Calendar.HOUR_OF_DAY, 9)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+    }.timeInMillis
 }

@@ -7,7 +7,6 @@
     android:padding="14dp"
     android:background="@drawable/widget_background">
 
-    <!-- Header: Date, Urgency status, and Main Lists button -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -20,17 +19,15 @@
             android:layout_weight="1"
             android:orientation="vertical">
 
-            <!-- Today's Date -->
             <TextView
                 android:id="@+id/widget_today_date"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="Sunday, Nov 1"
+                android:text="Today"
                 android:textColor="#FFFFFF"
                 android:textSize="17sp"
                 android:textStyle="bold" />
 
-            <!-- Urgency summary -->
             <TextView
                 android:id="@+id/widget_due_summary"
                 android:layout_width="wrap_content"
@@ -41,7 +38,6 @@
                 android:textSize="11sp" />
         </LinearLayout>
 
-        <!-- Main Lists button to open app -->
         <TextView
             android:id="@+id/widget_btn_main_lists"
             android:layout_width="wrap_content"
@@ -57,14 +53,14 @@
             android:textStyle="bold" />
     </LinearLayout>
 
-    <View
+    <TextView
         android:layout_width="match_parent"
         android:layout_height="1dp"
         android:layout_marginTop="10dp"
         android:layout_marginBottom="8dp"
-        android:background="#312E81" />
+        android:background="#312E81"
+        android:text="" />
 
-    <!-- Empty view when 0 tasks -->
     <TextView
         android:id="@+id/widget_empty_view"
         android:layout_width="match_parent"
@@ -76,7 +72,6 @@
         android:textSize="13sp"
         android:visibility="gone" />
 
-    <!-- Task Row 1 -->
     <LinearLayout
         android:id="@+id/widget_row_1"
         android:layout_width="match_parent"
@@ -116,11 +111,10 @@
             android:paddingBottom="2dp"
             android:text="URGENT"
             android:textColor="#FFFFFF"
-            android:textSize="9sp"
+            android:textSize="11sp"
             android:textStyle="bold" />
     </LinearLayout>
 
-    <!-- Task Row 2 -->
     <LinearLayout
         android:id="@+id/widget_row_2"
         android:layout_width="match_parent"
@@ -160,11 +154,10 @@
             android:paddingBottom="2dp"
             android:text="HIGH"
             android:textColor="#FFFFFF"
-            android:textSize="9sp"
+            android:textSize="11sp"
             android:textStyle="bold" />
     </LinearLayout>
 
-    <!-- Task Row 3 -->
     <LinearLayout
         android:id="@+id/widget_row_3"
         android:layout_width="match_parent"
@@ -204,11 +197,10 @@
             android:paddingBottom="2dp"
             android:text="MEDIUM"
             android:textColor="#FFFFFF"
-            android:textSize="9sp"
+            android:textSize="11sp"
             android:textStyle="bold" />
     </LinearLayout>
 
-    <!-- Task Row 4 -->
     <LinearLayout
         android:id="@+id/widget_row_4"
         android:layout_width="match_parent"
@@ -248,7 +240,7 @@
             android:paddingBottom="2dp"
             android:text="MEDIUM"
             android:textColor="#FFFFFF"
-            android:textSize="9sp"
+            android:textSize="11sp"
             android:textStyle="bold" />
     </LinearLayout>
 

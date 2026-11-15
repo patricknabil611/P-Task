@@ -2,21 +2,20 @@ package com.example.ui.viewmodel
 
 import android.app.Application
 import android.content.Intent
-import android.util.Log
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.ai.GeminiTaskParser
 import com.example.ai.ParsedTaskResult
 import com.example.backup.BackupRestoreManager
 import com.example.data.drive.DriveAuthResult
-import com.example.data.drive.DriveColorPalette
 import com.example.data.drive.GoogleDriveAuthHelper
+import com.example.data.drive.GoogleDriveService
 import com.example.data.drive.SharedListState
 import com.example.data.drive.SharedListSyncManager
-import com.example.data.drive.SyncStatus
-import com.example.data.model.ListMember
+import com.example.data.model.DEFAULT_CATEGORIES
 import com.example.data.model.SharedTaskItem
-import com.example.data.model.SharedTodoListFile
 import com.example.data.model.TaskItem
 import com.example.data.model.TodoList
 import com.example.data.model.UserSettings
@@ -25,6 +24,8 @@ import com.example.notification.NotificationHelper
 import com.example.widget.OmniTaskWidgetProvider
 import com.google.firebase.Firebase
 import com.google.firebase.auth.auth
+import com.google.firebase.firestore.FirebaseFirestoreException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +35,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.util.Calendar
+import java.util.UUID
 
 sealed interface UiState<out T> {
     data object Loading : UiState<Nothing>
@@ -43,953 +46,353 @@ sealed interface UiState<out T> {
 
 sealed interface NlpUiState {
     data object Idle : NlpUiState
-    data object Loading : NlpUiState
-    data class Success(val parsed: ParsedTaskResult) : NlpUiState
+    data object Parsing : NlpUiState
+    data class Ready(val parsed: ParsedTaskResult) : NlpUiState
     data class Error(val message: String) : NlpUiState
 }
 
-data class UndoAction(
-    val message: String,
-    val onUndo: () -> Unit
-)
+sealed interface UndoAction {
+    data class DeletedTask(val task: TaskItem) : UndoAction
+}
 
 class TodoViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = TodoRepository.create(application)
-    val syncManager = SharedListSyncManager(application)
+    private val appContext = application.applicationContext
+    private val repository = TodoRepository.create(appContext)
+    private val driveAuthHelper = GoogleDriveAuthHelper(appContext)
+    private val driveService = GoogleDriveService()
+    private val syncManager = SharedListSyncManager(appContext, driveService, driveAuthHelper)
+    private val geminiTaskParser = GeminiTaskParser()
 
-    // Map of taskId -> target isCompleted state for instant optimistic UI
-    private val _optimisticToggles = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val listsState: StateFlow<UiState<List<TodoList>>> = repository.observeLists()
+        .map<List<TodoList>, UiState<List<TodoList>>> { UiState.Success(it) }
+        .catch { error ->
+            val fsError = generateSequence(error) { it.cause }
+                .filterIsInstance<FirebaseFirestoreException>()
+                .firstOrNull()
+            if (fsError == null && error is CancellationException) throw error
+            emit(UiState.Error((fsError ?: error).localizedMessage ?: "Failed to load lists"))
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
-    val sharedListsMap: StateFlow<Map<String, SharedListState>> = syncManager.sharedListsMap
-    val syncStatusMap: StateFlow<Map<String, SyncStatus>> = syncManager.syncStatusMap
+    val tasksState: StateFlow<UiState<List<TaskItem>>> = repository.observeTasks()
+        .map<List<TaskItem>, UiState<List<TaskItem>>> { tasks ->
+            OmniTaskWidgetProvider.updateAllWidgets(appContext, tasks)
+            UiState.Success(tasks)
+        }
+        .catch { error ->
+            val fsError = generateSequence(error) { it.cause }
+                .filterIsInstance<FirebaseFirestoreException>()
+                .firstOrNull()
+            if (fsError == null && error is CancellationException) throw error
+            emit(UiState.Error((fsError ?: error).localizedMessage ?: "Failed to load tasks"))
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
-    fun getCurrentUserEmail(): String {
-        return GoogleDriveAuthHelper.getCurrentGoogleAccount(getApplication())?.email
-            ?: Firebase.auth.currentUser?.email
-            ?: "user@example.com"
-    }
+    val settingsState: StateFlow<UserSettings> = repository.observeSettings()
+        .catch { emit(UserSettings()) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UserSettings())
 
-    fun getCurrentUserName(): String {
-        return GoogleDriveAuthHelper.getCurrentGoogleAccount(getApplication())?.displayName
-            ?: Firebase.auth.currentUser?.displayName
-            ?: getCurrentUserEmail().substringBefore("@")
-    }
+    val sharedLists: StateFlow<List<SharedListState>> = syncManager.sharedLists
 
-    private val _isDriveConnected = MutableStateFlow(
-        GoogleDriveAuthHelper.hasDrivePermission(application)
-    )
+    val allCombinedTasks: StateFlow<List<TaskItem>> = combine(tasksState, sharedLists) { localState, shared ->
+        val local = (localState as? UiState.Success)?.data.orEmpty()
+        val remote = shared.flatMap { it.file.toTaskItems() }
+        (local + remote).distinctBy { "${it.listId}_${it.id}" }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
+
+    private val _isDriveConnected = MutableStateFlow(driveAuthHelper.isConnected())
     val isDriveConnected: StateFlow<Boolean> = _isDriveConnected.asStateFlow()
 
     private val _isRefreshingDrive = MutableStateFlow(false)
     val isRefreshingDrive: StateFlow<Boolean> = _isRefreshingDrive.asStateFlow()
 
-    private var pendingOneStepShare: (() -> Unit)? = null
-    private var pendingOneStepCancel: ((String) -> Unit)? = null
+    private val _statusMessage = MutableStateFlow<String?>(null)
+    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
-    private val _userAvatarColor = MutableStateFlow(
-        DriveColorPalette.getUserColor(application, getCurrentUserEmail())
-    )
-    val userAvatarColor: StateFlow<String> = _userAvatarColor.asStateFlow()
-
-    // Intent to prompt user for Google Drive consent if required
-    private val _driveAuthIntent = MutableStateFlow<Intent?>(null)
-    val driveAuthIntent: StateFlow<Intent?> = _driveAuthIntent.asStateFlow()
-
-    val listsState: StateFlow<UiState<List<TodoList>>> = repository.observeLists()
-        .map<List<TodoList>, UiState<List<TodoList>>> { UiState.Success(it) }
-        .catch { emit(UiState.Error(it.message ?: "Failed to load lists")) }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000L),
-            initialValue = UiState.Loading
-        )
-
-    val allTasksState: StateFlow<UiState<List<TaskItem>>> = combine(
-        repository.observeTasks(),
-        syncManager.sharedListsMap,
-        _optimisticToggles
-    ) { localTasks, sharedMap, optimisticMap ->
-        val sharedTasks = sharedMap.values.flatMap { state ->
-            state.file.tasks.filterNot { it.isDeleted }.map { it.toTaskItem() }
-        }
-        // Deduplicate tasks: shared version takes precedence if in a shared list,
-        // and ensure no two tasks have the same ID to prevent LazyColumn duplicate key crashes
-        val combinedTasks = (sharedTasks + localTasks).distinctBy { it.id }
-
-        val effectiveTasks = if (optimisticMap.isEmpty()) {
-            combinedTasks
-        } else {
-            combinedTasks.map { task ->
-                val optCompleted = optimisticMap[task.id]
-                if (optCompleted != null) {
-                    val completedAt = if (optCompleted) {
-                        if (task.completedAt > 0L) task.completedAt else System.currentTimeMillis()
-                    } else {
-                        0L
-                    }
-                    task.copy(isCompleted = optCompleted, completedAt = completedAt)
-                } else {
-                    task
-                }
-            }
-        }
-        // Keep home widget updated with active non-completed tasks
-        OmniTaskWidgetProvider.updateAllWidgets(getApplication(), effectiveTasks)
-        UiState.Success(effectiveTasks) as UiState<List<TaskItem>>
-    }.catch { emit(UiState.Error(it.message ?: "Failed to load tasks")) }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000L),
-            initialValue = UiState.Loading
-        )
-
-    val settingsState: StateFlow<UserSettings?> = repository.observeSettings()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000L),
-            initialValue = null
-        )
-
-    private val _selectedListId = MutableStateFlow<String?>(null)
-    val selectedListId: StateFlow<String?> = _selectedListId.asStateFlow()
-
-    private val _searchQuery = MutableStateFlow("")
-    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
-
-    private val _selectedCategoryFilter = MutableStateFlow<String?>("All")
-    val selectedCategoryFilter: StateFlow<String?> = _selectedCategoryFilter.asStateFlow()
-
-    private val _isBiometricUnlocked = MutableStateFlow(false)
-    val isBiometricUnlocked: StateFlow<Boolean> = _isBiometricUnlocked.asStateFlow()
+    private val _driveConsentIntent = MutableStateFlow<Intent?>(null)
+    val driveConsentIntent: StateFlow<Intent?> = _driveConsentIntent.asStateFlow()
 
     private val _nlpState = MutableStateFlow<NlpUiState>(NlpUiState.Idle)
     val nlpState: StateFlow<NlpUiState> = _nlpState.asStateFlow()
 
-    private val _snackMessage = MutableStateFlow<String?>(null)
-    val snackMessage: StateFlow<String?> = _snackMessage.asStateFlow()
-
-    private val _undoAction = MutableStateFlow<UndoAction?>(null)
-    val undoAction: StateFlow<UndoAction?> = _undoAction.asStateFlow()
+    private val _lastUndo = MutableStateFlow<UndoAction?>(null)
+    val lastUndo: StateFlow<UndoAction?> = _lastUndo.asStateFlow()
 
     init {
         viewModelScope.launch {
-            try {
-                repository.seedDefaultListsIfEmpty()
-            } catch (e: Exception) {
-                Log.e("TodoViewModel", "Error seeding default lists", e)
-            }
+            repository.ensureDefaultListIfEmpty()
         }
-
-        // Discover and refresh shared lists on app launch
-        refreshDriveSharedLists()
+        if (_isDriveConnected.value) {
+            refreshSharedLists()
+        }
     }
 
-    fun clearDriveAuthIntent() {
-        _driveAuthIntent.value = null
+    fun getCurrentUserEmail(): String {
+        return driveAuthHelper.getConnectedAccount()?.email?.takeIf { it.isNotBlank() }
+            ?: Firebase.auth.currentUser?.email.orEmpty()
     }
 
-    fun refreshDriveSharedLists(interactive: Boolean = false, onComplete: () -> Unit = {}) {
+    fun clearStatusMessage() {
+        _statusMessage.value = null
+    }
+
+    fun clearDriveConsentIntent() {
+        _driveConsentIntent.value = null
+    }
+
+    fun requestDriveConnect() {
         viewModelScope.launch {
-            if (interactive) _isRefreshingDrive.value = true
-            try {
-                _isDriveConnected.value = GoogleDriveAuthHelper.hasDrivePermission(getApplication())
-                val authRes = GoogleDriveAuthHelper.getAccessToken(getApplication())
-                when (authRes) {
-                    is DriveAuthResult.Success -> {
-                        _isDriveConnected.value = true
-                        val res = syncManager.refreshDiscoveredSharedLists(authRes.token, authRes.account.email.orEmpty())
-                        res.onSuccess { list ->
-                            if (interactive) {
-                                showSnack("Synced ${list.size} shared list(s) with Google Drive")
-                            }
-                        }.onFailure { err ->
-                            Log.w("TodoViewModel", "Drive refresh failed: ${err.message}")
-                            if (interactive) {
-                                showSnack("Drive sync issue: ${err.message}")
-                            }
-                        }
-                        onComplete()
-                    }
-                    is DriveAuthResult.NeedsUserConsent -> {
-                        _isDriveConnected.value = false
-                        if (interactive) {
-                            _driveAuthIntent.value = authRes.intent
-                        }
-                        onComplete()
-                    }
-                    is DriveAuthResult.NeedsSignIn -> {
-                        _isDriveConnected.value = false
-                        if (interactive) {
-                            _driveAuthIntent.value = authRes.signInIntent
-                        }
-                        onComplete()
-                    }
-                    is DriveAuthResult.Error -> {
-                        Log.w("TodoViewModel", "Drive not connected: ${authRes.message}")
-                        if (authRes.isRecoverable) {
-                            _isDriveConnected.value = false
-                        }
-                        if (interactive) {
-                            showSnack(authRes.message)
-                        }
-                        onComplete()
-                    }
+            when (val res = driveAuthHelper.getAccessToken()) {
+                is DriveAuthResult.Success -> {
+                    _isDriveConnected.value = true
+                    refreshSharedLists()
                 }
-            } catch (e: Exception) {
-                Log.e("TodoViewModel", "Error refreshing shared lists", e)
-                if (interactive) {
-                    showSnack("Error refreshing Drive lists: ${e.message}")
+                is DriveAuthResult.NeedsConsent -> {
+                    _driveConsentIntent.value = res.consentIntent
                 }
-                onComplete()
-            } finally {
-                _isRefreshingDrive.value = false
+                is DriveAuthResult.Error -> {
+                    _statusMessage.value = res.message
+                }
             }
         }
     }
 
-    fun connectGoogleDrive() {
-        refreshDriveSharedLists(interactive = true)
-    }
-
-    fun onDriveAccountConnected(account: com.google.android.gms.auth.api.signin.GoogleSignInAccount) {
-        _isDriveConnected.value = GoogleDriveAuthHelper.hasDrivePermission(getApplication()) || account.email != null
-        _userAvatarColor.value = DriveColorPalette.getUserColor(getApplication(), getCurrentUserEmail())
-        val pending = pendingOneStepShare
-        pendingOneStepShare = null
-        pendingOneStepCancel = null
-        if (pending != null) {
-            pending.invoke()
-        } else {
-            showSnack("Connected to Google Drive as ${account.email}")
-            refreshDriveSharedLists(interactive = false)
+    fun onDriveSignInResult(data: Intent?) {
+        val res = driveAuthHelper.handleSignInResultIntent(data)
+        res.onSuccess {
+            _isDriveConnected.value = driveAuthHelper.isConnected()
+            if (_isDriveConnected.value) {
+                refreshSharedLists()
+            } else {
+                requestDriveConnect()
+            }
+        }.onFailure { err ->
+            _isDriveConnected.value = driveAuthHelper.isConnected()
+            _statusMessage.value = err.localizedMessage ?: "Google Drive sign-in was cancelled."
         }
     }
 
     fun onDriveConsentCancelled() {
-        pendingOneStepShare = null
-        val cancelCb = pendingOneStepCancel
-        pendingOneStepCancel = null
-        cancelCb?.invoke("Google Drive permission is required to share lists.")
-        refreshDriveSharedLists(interactive = false)
+        _driveConsentIntent.value = null
+        _isDriveConnected.value = driveAuthHelper.isConnected()
     }
 
-    fun onUserSignOut(onComplete: () -> Unit) {
-        pendingOneStepShare = null
-        pendingOneStepCancel = null
+    fun refreshSharedLists() {
+        viewModelScope.launch {
+            _isRefreshingDrive.value = true
+            val res = syncManager.refreshFromDrive()
+            res.onFailure { err ->
+                _statusMessage.value = err.localizedMessage
+            }
+            _isRefreshingDrive.value = false
+        }
+    }
+
+    fun onUserSignOut() {
         syncManager.clearAllCaches()
+        driveAuthHelper.signOut()
         _isDriveConnected.value = false
-        GoogleDriveAuthHelper.signOut(getApplication()) {
-            onComplete()
-        }
     }
 
-    fun selectList(listId: String?) {
-        _selectedListId.value = listId
-        if (listId != null && sharedListsMap.value.containsKey(listId)) {
-            syncManager.startActivePolling(listId, viewModelScope)
-        } else {
-            syncManager.stopActivePolling()
-        }
-    }
-
-    fun isSharedList(listId: String): Boolean {
-        return sharedListsMap.value.containsKey(listId)
-    }
-
-    fun getSharedListState(listId: String): SharedListState? {
-        return sharedListsMap.value[listId]
-    }
-
-    fun setSearchQuery(query: String) {
-        _searchQuery.value = query
-    }
-
-    fun setCategoryFilter(category: String?) {
-        _selectedCategoryFilter.value = category
-    }
-
-    fun setBiometricUnlocked(unlocked: Boolean) {
-        _isBiometricUnlocked.value = unlocked
-    }
-
-    fun clearSnackMessage() {
-        _snackMessage.value = null
-    }
-
-    fun showSnack(msg: String) {
-        _snackMessage.value = msg
-    }
-
-    fun clearUndoAction() {
-        _undoAction.value = null
-    }
-
-    fun setUserAvatarColor(hex: String) {
-        DriveColorPalette.saveUserColor(getApplication(), getCurrentUserEmail(), hex)
-        _userAvatarColor.value = hex
-        showSnack("Personal avatar color updated")
-    }
-
-    // 1-Step Sharing: Authorize Drive if needed -> Upload list if needed -> Invite email -> Return clear confirmation
-    fun shareListAndInviteOneStep(
-        localList: TodoList,
-        inviteEmail: String,
-        role: String,
-        onComplete: (success: Boolean, message: String) -> Unit
-    ) {
-        val cleanEmail = inviteEmail.trim()
-        if (cleanEmail.isBlank() || !android.util.Patterns.EMAIL_ADDRESS.matcher(cleanEmail).matches()) {
-            onComplete(false, "Please enter a valid email address.")
-            return
-        }
-
+    fun createList(title: String, iconKey: String, colorHex: String, isLocked: Boolean) {
         viewModelScope.launch {
-            try {
-                val authRes = GoogleDriveAuthHelper.getAccessToken(getApplication())
-                if (authRes !is DriveAuthResult.Success) {
-                    _isDriveConnected.value = false
-                    when (authRes) {
-                        is DriveAuthResult.NeedsUserConsent -> {
-                            pendingOneStepShare = { shareListAndInviteOneStep(localList, cleanEmail, role, onComplete) }
-                            pendingOneStepCancel = { msg -> onComplete(false, msg) }
-                            _driveAuthIntent.value = authRes.intent
-                        }
-                        is DriveAuthResult.NeedsSignIn -> {
-                            pendingOneStepShare = { shareListAndInviteOneStep(localList, cleanEmail, role, onComplete) }
-                            pendingOneStepCancel = { msg -> onComplete(false, msg) }
-                            _driveAuthIntent.value = authRes.signInIntent
-                        }
-                        is DriveAuthResult.Error -> {
-                            onComplete(false, authRes.message)
-                        }
-                        else -> {
-                            onComplete(false, "Google Drive authorization is required.")
-                        }
-                    }
-                    return@launch
-                }
-                _isDriveConnected.value = true
-
-                val currentEmail = authRes.account.email.orEmpty().ifBlank { getCurrentUserEmail() }
-                val currentName = authRes.account.displayName.orEmpty().ifBlank { getCurrentUserName() }
-                val currentColor = _userAvatarColor.value
-
-                if (cleanEmail.equals(currentEmail, ignoreCase = true)) {
-                    onComplete(false, "You are already the owner of this list.")
-                    return@launch
-                }
-
-                // Step 1: Ensure list exists in Google Drive if not yet uploaded
-                val existingShared = syncManager.sharedListsMap.value[localList.id]
-                if (existingShared == null || existingShared.file.driveFileId.isBlank()) {
-                    val existingTasks = ((allTasksState.value as? UiState.Success)?.data ?: emptyList())
-                        .filter { it.listId == localList.id }
-                        .distinctBy { it.id }
-                        .map { SharedTaskItem.fromTaskItem(it, currentEmail, currentName) }
-
-                    val ownerMember = ListMember(
-                        email = currentEmail,
-                        name = currentName,
-                        color = currentColor,
-                        role = "owner"
-                    )
-
-                    val sharedList = SharedTodoListFile(
-                        id = localList.id,
-                        name = localList.title,
-                        ownerEmail = currentEmail,
-                        ownerName = currentName,
-                        description = localList.description,
-                        category = localList.category,
-                        icon = localList.icon,
-                        colorHex = localList.colorHex,
-                        createdAt = System.currentTimeMillis(),
-                        updatedAt = System.currentTimeMillis(),
-                        members = listOf(ownerMember),
-                        tasks = existingTasks
-                    )
-
-                    val createRes = syncManager.createAndUploadSharedList(authRes.token, sharedList, currentEmail)
-                    if (createRes.isFailure) {
-                        val errMsg = createRes.exceptionOrNull()?.message ?: "Upload failed"
-                        onComplete(false, "Could not prepare list on Google Drive: $errMsg")
-                        return@launch
-                    }
-                }
-
-                // Step 2: Grant permission & send email notification via Drive Permissions API
-                val inviteRes = syncManager.inviteMember(localList.id, cleanEmail, role)
-                inviteRes.onSuccess {
-                    showSnack("Shared \"${localList.title}\" with $cleanEmail")
-                    onComplete(
-                        true,
-                        "Shared with $cleanEmail! An email notification was sent, and the list will appear under 'Shared with me' in their P Task app."
-                    )
-                }.onFailure { err ->
-                    onComplete(false, "Could not share with $cleanEmail: ${err.message}")
-                }
-            } catch (e: Exception) {
-                onComplete(false, e.localizedMessage ?: "Failed sharing list")
-            }
-        }
-    }
-
-    // Google Drive Sharing Functions
-    fun shareListToDrive(localList: TodoList, onComplete: (Boolean, String?) -> Unit) {
-        viewModelScope.launch {
-            try {
-                val authRes = GoogleDriveAuthHelper.getAccessToken(getApplication())
-                if (authRes !is DriveAuthResult.Success) {
-                    _isDriveConnected.value = false
-                    when (authRes) {
-                        is DriveAuthResult.NeedsUserConsent -> _driveAuthIntent.value = authRes.intent
-                        is DriveAuthResult.NeedsSignIn -> _driveAuthIntent.value = authRes.signInIntent
-                        is DriveAuthResult.Error -> showSnack(authRes.message)
-                        else -> Unit
-                    }
-                    onComplete(false, "Google Drive authorization required")
-                    return@launch
-                }
-                _isDriveConnected.value = true
-
-                val currentEmail = authRes.account.email.orEmpty().ifBlank { getCurrentUserEmail() }
-                val currentName = authRes.account.displayName.orEmpty().ifBlank { getCurrentUserName() }
-                val currentColor = _userAvatarColor.value
-
-                // Gather existing local tasks for this list
-                val existingTasks = ((allTasksState.value as? UiState.Success)?.data ?: emptyList())
-                    .filter { it.listId == localList.id }
-                    .distinctBy { it.id }
-                    .map { SharedTaskItem.fromTaskItem(it, currentEmail, currentName) }
-
-                val ownerMember = ListMember(
-                    email = currentEmail,
-                    name = currentName,
-                    color = currentColor,
-                    role = "owner"
+            repository.createList(
+                TodoList(
+                    title = title,
+                    iconKey = iconKey,
+                    colorHex = colorHex,
+                    isLocked = isLocked,
+                    ownerEmail = getCurrentUserEmail()
                 )
+            ).onFailure { _statusMessage.value = it.localizedMessage }
+        }
+    }
 
-                val sharedList = SharedTodoListFile(
-                    id = localList.id,
-                    name = localList.title,
-                    ownerEmail = currentEmail,
-                    ownerName = currentName,
-                    description = localList.description,
-                    category = localList.category,
-                    icon = localList.icon,
-                    colorHex = localList.colorHex,
-                    createdAt = System.currentTimeMillis(),
-                    updatedAt = System.currentTimeMillis(),
-                    members = listOf(ownerMember),
-                    tasks = existingTasks
+    fun updateList(list: TodoList) {
+        viewModelScope.launch {
+            if (list.isShared) {
+                val existing = sharedLists.value.find { it.file.id == list.id } ?: return@launch
+                val updated = existing.file.copy(
+                    title = list.title,
+                    iconKey = list.iconKey,
+                    colorHex = list.colorHex,
+                    updatedByEmail = getCurrentUserEmail()
                 )
+                syncManager.updateSharedListContent(updated)
+                    .onFailure { _statusMessage.value = it.localizedMessage }
+            } else {
+                repository.updateList(list)
+                    .onFailure { _statusMessage.value = it.localizedMessage }
+            }
+        }
+    }
 
-                val result = syncManager.createAndUploadSharedList(authRes.token, sharedList, currentEmail)
-                result.onSuccess {
-                    showSnack("List shared to Google Drive!")
-                    onComplete(true, null)
-                }.onFailure {
-                    showSnack("Failed to share list: ${it.message}")
-                    onComplete(false, it.message)
+    fun deleteList(listId: String) {
+        viewModelScope.launch {
+            val tasks = (tasksState.value as? UiState.Success)?.data.orEmpty()
+                .filter { it.listId == listId }
+            tasks.forEach { NotificationHelper.cancelReminder(appContext, it.id) }
+            repository.deleteList(listId)
+                .onFailure { _statusMessage.value = it.localizedMessage }
+        }
+    }
+
+    fun saveTask(task: TaskItem, listTitle: String, isNew: Boolean) {
+        viewModelScope.launch {
+            val sharedState = sharedLists.value.find { it.file.id == task.listId }
+            if (sharedState != null) {
+                if (sharedState.isReadOnly) {
+                    _statusMessage.value = "This shared list is view-only."
+                    return@launch
                 }
-            } catch (e: Exception) {
-                showSnack("Error: ${e.message}")
-                onComplete(false, e.message)
-            }
-        }
-    }
-
-    fun inviteMemberToSharedList(listId: String, email: String, role: String, onComplete: (Boolean, String?) -> Unit) {
-        viewModelScope.launch {
-            try {
-                val res = syncManager.inviteMember(listId, email, role)
-                res.onSuccess {
-                    showSnack("Invited $email to list")
-                    onComplete(true, null)
-                }.onFailure {
-                    showSnack("Invite failed: ${it.message}")
-                    onComplete(false, it.message)
-                }
-            } catch (e: Exception) {
-                showSnack("Error: ${e.message}")
-                onComplete(false, e.message)
-            }
-        }
-    }
-
-    fun updateMemberRole(listId: String, memberEmail: String, newRole: String) {
-        viewModelScope.launch {
-            syncManager.updateMemberRole(listId, memberEmail, newRole)
-            showSnack("Updated role for $memberEmail")
-        }
-    }
-
-    fun removeMemberFromSharedList(listId: String, memberEmail: String) {
-        viewModelScope.launch {
-            syncManager.removeMember(listId, memberEmail)
-            showSnack("Removed $memberEmail from list")
-        }
-    }
-
-    fun leaveSharedList(listId: String) {
-        viewModelScope.launch {
-            syncManager.leaveSharedList(listId, getCurrentUserEmail())
-            if (_selectedListId.value == listId) {
-                _selectedListId.value = null
-            }
-            showSnack("Left shared list")
-        }
-    }
-
-    fun deleteSharedList(listId: String) {
-        viewModelScope.launch {
-            syncManager.deleteSharedListCompletely(listId)
-            if (_selectedListId.value == listId) {
-                _selectedListId.value = null
-            }
-            showSnack("Deleted shared list from Google Drive")
-        }
-    }
-
-    fun addTodoList(list: TodoList, onComplete: () -> Unit = {}) {
-        viewModelScope.launch {
-            try {
-                repository.addTodoList(list)
-                showSnack("List created: ${list.title}")
-                onComplete()
-            } catch (e: Exception) {
-                showSnack("Error creating list: ${e.message}")
-            }
-        }
-    }
-
-    fun updateTodoList(list: TodoList, onComplete: () -> Unit = {}) {
-        viewModelScope.launch {
-            try {
-                if (isSharedList(list.id)) {
-                    syncManager.saveSharedListChanges(list.id) { file ->
-                        file.copy(
-                            name = list.title,
-                            description = list.description,
-                            category = list.category,
-                            icon = list.icon,
-                            colorHex = list.colorHex
-                        )
-                    }
+                val now = System.currentTimeMillis()
+                val actor = getCurrentUserEmail()
+                val taskId = task.id.ifBlank { UUID.randomUUID().toString() }
+                val sharedItem = SharedTaskItem(
+                    id = taskId,
+                    title = task.title.trim(),
+                    notes = task.notes,
+                    priority = task.priority,
+                    isCompleted = task.isCompleted,
+                    dueDateEpoch = task.dueDateEpoch,
+                    reminderEpoch = task.reminderEpoch,
+                    reminderSoundKey = task.reminderSoundKey,
+                    category = task.category,
+                    updatedByEmail = actor,
+                    updatedAtEpoch = now
+                )
+                val nextTasks = if (isNew) {
+                    sharedState.file.tasks + sharedItem
                 } else {
-                    repository.updateTodoList(list)
+                    sharedState.file.tasks.map { if (it.id == taskId) sharedItem else it }
                 }
-                showSnack("List updated: ${list.title}")
-                onComplete()
-            } catch (e: Exception) {
-                showSnack("Error updating list: ${e.message}")
-            }
-        }
-    }
-
-    fun deleteTodoList(listId: String, listTitle: String) {
-        viewModelScope.launch {
-            try {
-                if (isSharedList(listId)) {
-                    val shared = getSharedListState(listId)?.file
-                    if (shared != null && shared.ownerEmail.equals(getCurrentUserEmail(), ignoreCase = true)) {
-                        syncManager.deleteSharedListCompletely(listId)
-                    } else {
-                        syncManager.leaveSharedList(listId, getCurrentUserEmail())
-                    }
-                } else {
-                    repository.deleteTodoList(listId)
-                }
-                if (_selectedListId.value == listId) {
-                    _selectedListId.value = null
-                }
-                showSnack("Deleted list: $listTitle")
-            } catch (e: Exception) {
-                showSnack("Error deleting list: ${e.message}")
-            }
-        }
-    }
-
-    fun addTask(task: TaskItem, listTitle: String = "P Task", onComplete: () -> Unit = {}) {
-        viewModelScope.launch {
-            try {
-                val listId = task.listId
-                val taskId = if (isSharedList(listId)) {
-                    val currentEmail = getCurrentUserEmail()
-                    val currentName = getCurrentUserName()
-                    val now = System.currentTimeMillis()
-                    val sharedTask = SharedTaskItem(
-                        id = if (task.id.isNotBlank()) task.id else "task_${java.util.UUID.randomUUID()}",
-                        listId = listId,
-                        title = task.title,
-                        notes = task.notes,
-                        isCompleted = task.isCompleted,
-                        priority = task.priority,
-                        dueDateEpoch = task.dueDateEpoch,
-                        reminderEpoch = task.reminderEpoch,
-                        reminderSound = task.reminderSound,
-                        category = task.category,
-                        completedAt = task.completedAt,
-                        createdBy = currentEmail,
-                        createdByName = currentName,
-                        createdAt = now,
-                        updatedBy = currentEmail,
-                        updatedByName = currentName,
-                        updatedAt = now,
-                        isDeleted = false
+                syncManager.updateSharedListContent(
+                    sharedState.file.copy(
+                        tasks = nextTasks,
+                        updatedByEmail = actor,
+                        updatedAtEpoch = now
                     )
-                    syncManager.saveSharedListChanges(listId) { file ->
-                        file.copy(tasks = file.tasks + sharedTask)
-                    }
-                    sharedTask.id
+                ).onFailure { _statusMessage.value = it.localizedMessage }
+            } else {
+                val res = if (isNew) {
+                    repository.createTask(task)
                 } else {
-                    repository.addTask(task)
+                    repository.updateTask(task).map { task.id }
                 }
-
-                if (task.reminderEpoch > System.currentTimeMillis()) {
-                    NotificationHelper.scheduleReminder(
-                        context = getApplication(),
-                        taskId = taskId,
-                        taskTitle = task.title,
-                        listTitle = listTitle,
-                        reminderEpoch = task.reminderEpoch,
-                        soundKey = task.reminderSound
-                    )
-                }
-                showSnack("Task added: ${task.title}")
-                onComplete()
-            } catch (e: Exception) {
-                showSnack("Error adding task: ${e.message}")
-            }
-        }
-    }
-
-    fun updateTask(task: TaskItem, listTitle: String = "P Task", onComplete: () -> Unit = {}) {
-        viewModelScope.launch {
-            try {
-                val listId = task.listId
-                if (isSharedList(listId)) {
-                    val currentEmail = getCurrentUserEmail()
-                    val currentName = getCurrentUserName()
-                    val now = System.currentTimeMillis()
-                    syncManager.saveSharedListChanges(listId) { file ->
-                        val updated = file.tasks.map { existing ->
-                            if (existing.id == task.id) {
-                                existing.copy(
-                                    title = task.title,
-                                    notes = task.notes,
-                                    isCompleted = task.isCompleted,
-                                    priority = task.priority,
-                                    dueDateEpoch = task.dueDateEpoch,
-                                    reminderEpoch = task.reminderEpoch,
-                                    reminderSound = task.reminderSound,
-                                    category = task.category,
-                                    completedAt = task.completedAt,
-                                    updatedBy = currentEmail,
-                                    updatedByName = currentName,
-                                    updatedAt = now
-                                )
-                            } else existing
-                        }
-                        file.copy(tasks = updated)
-                    }
-                } else {
-                    repository.updateTask(task)
-                }
-
-                if (task.reminderEpoch > System.currentTimeMillis() && !task.isCompleted) {
-                    NotificationHelper.scheduleReminder(
-                        context = getApplication(),
-                        taskId = task.id,
-                        taskTitle = task.title,
-                        listTitle = listTitle,
-                        reminderEpoch = task.reminderEpoch,
-                        soundKey = task.reminderSound
-                    )
-                } else {
-                    NotificationHelper.cancelReminder(getApplication(), task.id)
-                }
-                showSnack("Task updated")
-                onComplete()
-            } catch (e: Exception) {
-                showSnack("Error updating task: ${e.message}")
-            }
-        }
-    }
-
-    fun toggleTask(task: TaskItem) {
-        val targetCompleted = !task.isCompleted
-        // Apply optimistic toggle immediately
-        _optimisticToggles.value = _optimisticToggles.value + (task.id to targetCompleted)
-
-        viewModelScope.launch {
-            try {
-                val listId = task.listId
-                if (isSharedList(listId)) {
-                    val currentEmail = getCurrentUserEmail()
-                    val currentName = getCurrentUserName()
-                    val now = System.currentTimeMillis()
-                    val completedAt = if (targetCompleted) now else 0L
-
-                    syncManager.saveSharedListChanges(listId) { file ->
-                        val updatedTasks = file.tasks.map { existing ->
-                            if (existing.id == task.id) {
-                                existing.copy(
-                                    isCompleted = targetCompleted,
-                                    completedAt = completedAt,
-                                    updatedBy = currentEmail,
-                                    updatedByName = currentName,
-                                    updatedAt = now
-                                )
-                            } else existing
-                        }
-                        file.copy(tasks = updatedTasks)
-                    }
-                } else {
-                    repository.toggleTaskCompletion(task)
-                }
-
-                // Remove optimistic override once persisted
-                _optimisticToggles.value = _optimisticToggles.value - task.id
-
-                if (targetCompleted) {
-                    NotificationHelper.cancelReminder(getApplication(), task.id)
-                    _undoAction.value = UndoAction(
-                        message = "Task completed",
-                        onUndo = {
-                            toggleTask(task.copy(isCompleted = true))
-                        }
-                    )
-                } else {
-                    // Task uncompleted - reschedule reminder if still in future
-                    if (task.reminderEpoch > System.currentTimeMillis()) {
-                        val currentLists = (listsState.value as? UiState.Success)?.data ?: emptyList()
-                        val listTitle = currentLists.firstOrNull { it.id == task.listId }?.title ?: "P Task"
+                res.onSuccess { savedId ->
+                    if (task.reminderEpoch > System.currentTimeMillis() && !task.isCompleted) {
                         NotificationHelper.scheduleReminder(
-                            context = getApplication(),
-                            taskId = task.id,
-                            taskTitle = task.title,
-                            listTitle = listTitle,
-                            reminderEpoch = task.reminderEpoch,
-                            soundKey = task.reminderSound
+                            appContext,
+                            savedId,
+                            task.title,
+                            listTitle,
+                            task.reminderEpoch,
+                            task.reminderSoundKey
                         )
+                    } else {
+                        NotificationHelper.cancelReminder(appContext, savedId)
                     }
-                }
-            } catch (e: Exception) {
-                // Revert optimistic toggle
-                _optimisticToggles.value = _optimisticToggles.value - task.id
-                showSnack("Error updating status: ${e.message}")
+                }.onFailure { _statusMessage.value = it.localizedMessage }
             }
         }
     }
 
-    fun clearCompletedTasks(listId: String) {
-        viewModelScope.launch {
-            try {
-                if (isSharedList(listId)) {
-                    val currentEmail = getCurrentUserEmail()
-                    val currentName = getCurrentUserName()
-                    val now = System.currentTimeMillis()
-                    syncManager.saveSharedListChanges(listId) { file ->
-                        val updated = file.tasks.map { task ->
-                            if (task.isCompleted) {
-                                task.copy(
-                                    isDeleted = true,
-                                    updatedBy = currentEmail,
-                                    updatedByName = currentName,
-                                    updatedAt = now
-                                )
-                            } else task
-                        }
-                        file.copy(tasks = updated)
-                    }
-                } else {
-                    repository.clearCompletedTasksInList(listId)
-                }
-                showSnack("Cleared completed tasks")
-            } catch (e: Exception) {
-                showSnack("Error clearing completed: ${e.message}")
-            }
-        }
+    fun toggleTaskCompleted(task: TaskItem, listTitle: String) {
+        val next = task.copy(isCompleted = !task.isCompleted)
+        saveTask(next, listTitle, isNew = false)
     }
 
     fun deleteTask(task: TaskItem) {
         viewModelScope.launch {
-            try {
-                val listId = task.listId
-                if (isSharedList(listId)) {
-                    val currentEmail = getCurrentUserEmail()
-                    val currentName = getCurrentUserName()
-                    val now = System.currentTimeMillis()
-                    syncManager.saveSharedListChanges(listId) { file ->
-                        val updated = file.tasks.map { existing ->
-                            if (existing.id == task.id) {
-                                existing.copy(
-                                    isDeleted = true,
-                                    updatedBy = currentEmail,
-                                    updatedByName = currentName,
-                                    updatedAt = now
-                                )
-                            } else existing
-                        }
-                        file.copy(tasks = updated)
-                    }
-                } else {
-                    repository.deleteTask(task.id)
+            NotificationHelper.cancelReminder(appContext, task.id)
+            val sharedState = sharedLists.value.find { it.file.id == task.listId }
+            if (sharedState != null) {
+                if (sharedState.isReadOnly) {
+                    _statusMessage.value = "This shared list is view-only."
+                    return@launch
                 }
-                NotificationHelper.cancelReminder(getApplication(), task.id)
-                showSnack("Task deleted")
-            } catch (e: Exception) {
-                showSnack("Error deleting task: ${e.message}")
+                val actor = getCurrentUserEmail()
+                val nextTasks = sharedState.file.tasks.filterNot { it.id == task.id }
+                syncManager.updateSharedListContent(
+                    sharedState.file.copy(
+                        tasks = nextTasks,
+                        updatedByEmail = actor,
+                        updatedAtEpoch = System.currentTimeMillis()
+                    )
+                ).onSuccess {
+                    _lastUndo.value = UndoAction.DeletedTask(task)
+                }.onFailure { _statusMessage.value = it.localizedMessage }
+            } else {
+                repository.deleteTask(task.id)
+                    .onSuccess { _lastUndo.value = UndoAction.DeletedTask(task) }
+                    .onFailure { _statusMessage.value = it.localizedMessage }
             }
         }
     }
 
-    fun updateSettings(themeMode: String, biometricEnabled: Boolean, defaultSound: String) {
-        viewModelScope.launch {
-            try {
-                val current = settingsState.value ?: UserSettings()
-                val updated = current.copy(
-                    themeMode = themeMode,
-                    biometricLockEnabled = biometricEnabled,
-                    defaultSound = defaultSound,
-                    categories = current.getResolvedCategories()
-                )
-                repository.updateSettings(updated)
-                showSnack("Settings saved")
-            } catch (e: Exception) {
-                showSnack("Error saving settings: ${e.message}")
-            }
+    fun undoLastDelete(listTitle: String) {
+        val action = _lastUndo.value ?: return
+        _lastUndo.value = null
+        when (action) {
+            is UndoAction.DeletedTask -> saveTask(action.task, listTitle, isNew = true)
         }
     }
 
-    // Category Management
-    fun addCategory(rawName: String, onResult: (Boolean, String?) -> Unit) {
-        val trimmed = rawName.trim()
-        if (trimmed.isEmpty()) {
-            onResult(false, "Category name cannot be empty")
-            return
+    fun clearUndo() {
+        _lastUndo.value = null
+    }
+
+    suspend fun shareListAndInviteOneStep(
+        list: TodoList,
+        targetEmail: String,
+        role: String
+    ): Result<String> {
+        val trimmedEmail = targetEmail.trim()
+        if (trimmedEmail.isBlank() || !trimmedEmail.contains("@")) {
+            return Result.failure(IllegalArgumentException("Enter a valid email address."))
         }
-        if (trimmed.length > 50) {
-            onResult(false, "Category name must be 50 characters or less")
-            return
+        val authRes = driveAuthHelper.getAccessToken()
+        if (authRes !is DriveAuthResult.Success) {
+            if (authRes is DriveAuthResult.NeedsConsent) {
+                _driveConsentIntent.value = authRes.consentIntent
+            }
+            return Result.failure(IllegalStateException("Connect Google Drive to share this list."))
         }
-        val currentCategories = (settingsState.value ?: UserSettings()).getResolvedCategories()
-        if (currentCategories.any { it.equals(trimmed, ignoreCase = true) }) {
-            onResult(false, "Category \"$trimmed\" already exists")
-            return
+        _isDriveConnected.value = true
+        val ownerEmail = authRes.account.email.orEmpty().ifBlank { getCurrentUserEmail() }
+
+        val targetDriveId: String
+        if (list.isShared && list.driveFileId.isNotBlank()) {
+            targetDriveId = list.driveFileId
+        } else {
+            val localTasks = (tasksState.value as? UiState.Success)?.data.orEmpty()
+                .filter { it.listId == list.id }
+            val uploadRes = syncManager.shareLocalListToDrive(list, localTasks, ownerEmail)
+            if (uploadRes.isFailure) {
+                return Result.failure(uploadRes.exceptionOrNull() ?: Exception("Upload failed"))
+            }
+            targetDriveId = uploadRes.getOrThrow().id
+            if (!list.isShared) {
+                repository.deleteList(list.id)
+            }
         }
 
-        val updatedList = currentCategories + trimmed
-        val currentSettings = settingsState.value ?: UserSettings()
-        viewModelScope.launch {
-            try {
-                repository.updateSettings(currentSettings.copy(categories = updatedList))
-                showSnack("Category added: $trimmed")
-                onResult(true, null)
-            } catch (e: Exception) {
-                onResult(false, e.message ?: "Failed to add category")
-            }
+        val inviteRes = syncManager.inviteMember(targetDriveId, trimmedEmail, role)
+        return inviteRes.map {
+            "Shared with $trimmedEmail! Notification email sent and synced to their P Task app."
         }
     }
 
-    fun renameCategory(oldCategory: String, rawNewName: String, onResult: (Boolean, String?) -> Unit) {
-        val trimmed = rawNewName.trim()
-        if (trimmed.isEmpty()) {
-            onResult(false, "Category name cannot be empty")
-            return
-        }
-        if (trimmed.length > 50) {
-            onResult(false, "Category name must be 50 characters or less")
-            return
-        }
-        val currentCategories = (settingsState.value ?: UserSettings()).getResolvedCategories()
-        if (!oldCategory.equals(trimmed, ignoreCase = true) &&
-            currentCategories.any { it.equals(trimmed, ignoreCase = true) }
-        ) {
-            onResult(false, "Category \"$trimmed\" already exists")
-            return
-        }
-
-        val updatedList = currentCategories.map { if (it == oldCategory) trimmed else it }
-        val currentSettings = settingsState.value ?: UserSettings()
+    fun parseVoiceOrTextWithAi(input: String) {
         viewModelScope.launch {
-            try {
-                repository.renameCategoryAcrossLists(oldCategory, trimmed)
-                repository.updateSettings(currentSettings.copy(categories = updatedList))
-                showSnack("Renamed category to $trimmed")
-                onResult(true, null)
-            } catch (e: Exception) {
-                onResult(false, e.message ?: "Failed to rename category")
-            }
-        }
-    }
-
-    fun deleteCategory(categoryToDelete: String, replacementCategory: String, onResult: (Boolean, String?) -> Unit) {
-        val currentCategories = (settingsState.value ?: UserSettings()).getResolvedCategories()
-        if (currentCategories.size <= 1) {
-            onResult(false, "You must keep at least one category")
-            return
-        }
-        val updatedList = currentCategories.filter { it != categoryToDelete }
-        val currentSettings = settingsState.value ?: UserSettings()
-        viewModelScope.launch {
-            try {
-                repository.renameCategoryAcrossLists(categoryToDelete, replacementCategory)
-                repository.updateSettings(currentSettings.copy(categories = updatedList))
-                showSnack("Deleted \"$categoryToDelete\" (reassigned to \"$replacementCategory\")")
-                onResult(true, null)
-            } catch (e: Exception) {
-                onResult(false, e.message ?: "Failed to delete category")
-            }
-        }
-    }
-
-    fun moveCategory(category: String, up: Boolean) {
-        val currentCategories = (settingsState.value ?: UserSettings()).getResolvedCategories().toMutableList()
-        val index = currentCategories.indexOf(category)
-        if (index == -1) return
-        val targetIndex = if (up) index - 1 else index + 1
-        if (targetIndex < 0 || targetIndex >= currentCategories.size) return
-
-        currentCategories.removeAt(index)
-        currentCategories.add(targetIndex, category)
-        val currentSettings = settingsState.value ?: UserSettings()
-        viewModelScope.launch {
-            try {
-                repository.updateSettings(currentSettings.copy(categories = currentCategories))
-            } catch (e: Exception) {
-                showSnack("Error reordering categories: ${e.message}")
-            }
-        }
-    }
-
-    fun resetCategoriesToDefaults() {
-        val currentSettings = settingsState.value ?: UserSettings()
-        viewModelScope.launch {
-            try {
-                repository.updateSettings(currentSettings.copy(categories = UserSettings.DEFAULT_CATEGORIES))
-                showSnack("Reset categories to default")
-            } catch (e: Exception) {
-                showSnack("Error resetting categories: ${e.message}")
-            }
-        }
-    }
-
-    // Natural Language Voice & Text Task Processing
-    fun parseNlpInput(input: String, currentLists: List<TodoList>) {
-        if (input.isBlank()) return
-        viewModelScope.launch {
-            _nlpState.value = NlpUiState.Loading
-            val listTitles = currentLists.map { it.title }
-            val categories = (settingsState.value ?: UserSettings()).getResolvedCategories()
-            val result = GeminiTaskParser.parseNaturalLanguageTask(input, listTitles, categories)
-            result.onSuccess {
-                _nlpState.value = NlpUiState.Success(it)
-            }.onFailure {
-                _nlpState.value = NlpUiState.Error(it.message ?: "Could not parse task")
-            }
+            _nlpState.value = NlpUiState.Parsing
+            val cats = settingsState.value.customCategories.ifEmpty { DEFAULT_CATEGORIES }
+            val res = geminiTaskParser.parseTaskInput(input, cats)
+            _nlpState.value = res.fold(
+                onSuccess = { NlpUiState.Ready(it) },
+                onFailure = { NlpUiState.Error(it.localizedMessage ?: "Unable to parse task") }
+            )
         }
     }
 
@@ -997,43 +400,64 @@ class TodoViewModel(application: Application) : AndroidViewModel(application) {
         _nlpState.value = NlpUiState.Idle
     }
 
-    // Backup & Restore
-    fun exportBackupJson(onReady: (String) -> Unit) {
-        val lists = (listsState.value as? UiState.Success)?.data ?: emptyList()
-        val tasks = (allTasksState.value as? UiState.Success)?.data ?: emptyList()
-        val json = BackupRestoreManager.exportToJson(lists, tasks)
-        onReady(json)
+    fun commitParsedTask(listId: String, listTitle: String, parsed: ParsedTaskResult) {
+        val dueEpoch = parsed.dueOffsetDays?.let { days ->
+            Calendar.getInstance().apply {
+                add(Calendar.DAY_OF_YEAR, days)
+                set(Calendar.HOUR_OF_DAY, 18)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+            }.timeInMillis
+        } ?: 0L
+        saveTask(
+            TaskItem(
+                listId = listId,
+                title = parsed.title,
+                notes = parsed.notes,
+                priority = parsed.priority,
+                category = parsed.category,
+                dueDateEpoch = dueEpoch,
+                reminderSoundKey = settingsState.value.defaultSoundKey
+            ),
+            listTitle = listTitle,
+            isNew = true
+        )
+        _nlpState.value = NlpUiState.Idle
     }
 
-    fun importBackupJson(jsonString: String, onComplete: (Boolean, String) -> Unit) {
-        val parsed = BackupRestoreManager.parseBackup(jsonString)
-        parsed.onSuccess { (importedLists, importedTasks) ->
-            viewModelScope.launch {
-                try {
-                    val currentLists = (listsState.value as? UiState.Success)?.data ?: emptyList()
-                    val titleToIdMap = currentLists.associate { it.title to it.id }.toMutableMap()
+    fun updateSettings(settings: UserSettings) {
+        viewModelScope.launch {
+            repository.saveSettings(settings)
+                .onFailure { _statusMessage.value = it.localizedMessage }
+        }
+    }
 
-                    // Add lists that don't exist
-                    for (list in importedLists) {
-                        if (!titleToIdMap.containsKey(list.title)) {
-                            val newId = repository.addTodoList(list)
-                            titleToIdMap[list.title] = newId
+    fun exportBackup(uri: Uri) {
+        val lists = (listsState.value as? UiState.Success)?.data.orEmpty()
+        val tasks = (tasksState.value as? UiState.Success)?.data.orEmpty()
+        BackupRestoreManager.exportToUri(appContext, uri, lists, tasks)
+            .onSuccess { count -> _statusMessage.value = "Exported $count tasks successfully." }
+            .onFailure { _statusMessage.value = it.localizedMessage ?: "Export failed." }
+    }
+
+    fun importBackup(uri: Uri) {
+        viewModelScope.launch {
+            BackupRestoreManager.importFromUri(appContext, uri)
+                .onSuccess { payload ->
+                    repository.restoreSnapshot(payload.lists, payload.tasks)
+                        .onSuccess {
+                            _statusMessage.value = "Restored ${payload.lists.size} lists and ${payload.tasks.size} tasks."
                         }
-                    }
-
-                    // Add tasks
-                    for (task in importedTasks) {
-                        repository.addTask(task)
-                    }
-
-                    showSnack("Restored ${importedLists.size} lists and ${importedTasks.size} tasks!")
-                    onComplete(true, "Restore successful")
-                } catch (e: Exception) {
-                    onComplete(false, e.message ?: "Failed to restore backup")
+                        .onFailure { _statusMessage.value = it.localizedMessage ?: "Restore failed." }
                 }
-            }
-        }.onFailure {
-            onComplete(false, "Invalid backup format: ${it.message}")
+                .onFailure { _statusMessage.value = it.localizedMessage ?: "Import failed." }
+        }
+    }
+
+    class Factory(private val application: Application) : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+            return TodoViewModel(application) as T
         }
     }
 }

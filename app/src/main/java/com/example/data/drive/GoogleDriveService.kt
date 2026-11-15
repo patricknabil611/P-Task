@@ -1,504 +1,294 @@
 package com.example.data.drive
 
-import android.util.Log
 import com.example.data.model.ListMember
 import com.example.data.model.SharedTodoListFile
+import com.squareup.moshi.Moshi
+import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.IOException
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 data class DriveFileSummary(
-    val fileId: String,
+    val id: String,
     val name: String,
-    val modifiedTime: String,
-    val canEdit: Boolean,
-    val isOwner: Boolean,
-    val ownerEmail: String,
-    val isTrashed: Boolean = false
+    val mimeType: String,
+    val modifiedTime: String = "",
+    val canEdit: Boolean = true,
+    val ownerEmail: String = ""
 )
 
 sealed interface DriveApiResult<out T> {
     data class Success<T>(val data: T) : DriveApiResult<T>
-    data class Error(val message: String, val isUnauthorized: Boolean = false, val isNotFound: Boolean = false) : DriveApiResult<Nothing>
+    data class HttpError(val code: Int, val message: String) : DriveApiResult<Nothing>
+    data class NetworkError(val message: String) : DriveApiResult<Nothing>
 }
 
-class GoogleDriveService(
-    private val client: OkHttpClient = OkHttpClient.Builder()
+class GoogleDriveService {
+
+    private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
-        .writeTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
+        .writeTimeout(25, TimeUnit.SECONDS)
         .build()
-) {
-    companion object {
-        private const val TAG = "GoogleDriveService"
-        private const val BASE_DRIVE_URL = "https://www.googleapis.com/drive/v3"
-        private const val BASE_UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
-        const val FOLDER_NAME = "P Task Shared"
+
+    private val moshi = Moshi.Builder()
+        .addLast(KotlinJsonAdapterFactory())
+        .build()
+
+    private val listFileAdapter = moshi.adapter(SharedTodoListFile::class.java)
+
+    private fun extractErrorSnippet(code: Int, body: String): String {
+        val cleaned = try {
+            JSONObject(body).optJSONObject("error")?.optString("message").orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+        return cleaned.ifBlank { body.take(180).ifBlank { "HTTP $code" } }
     }
 
-    private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
-
-    /**
-     * Find or create the "P Task Shared" folder in Google Drive.
-     */
-    suspend fun getOrCreateSharedFolder(token: String): DriveApiResult<String> = withContext(Dispatchers.IO) {
-        // Step 1: Search for existing folder
-        val query = "mimeType = 'application/vnd.google-apps.folder' and name = '$FOLDER_NAME' and trashed = false"
-        val searchUrl = "$BASE_DRIVE_URL/files?q=${java.net.URLEncoder.encode(query, "UTF-8")}&fields=files(id,name)"
-
-        val request = Request.Builder()
-            .url(searchUrl)
-            .addHeader("Authorization", "Bearer $token")
-            .get()
-            .build()
-
-        try {
-            client.newCall(request).execute().use { response ->
-                if (response.code == 401) {
-                    return@withContext DriveApiResult.Error("Access token expired", isUnauthorized = true)
-                }
-                if (!response.isSuccessful) {
-                    val err = response.body?.string()?.take(200).orEmpty()
-                    return@withContext DriveApiResult.Error("Failed to find folder: HTTP ${response.code} $err")
-                }
-                val body = response.body?.string().orEmpty()
-                val json = JSONObject(body)
-                val files = json.optJSONArray("files")
-                if (files != null && files.length() > 0) {
-                    val folderId = files.getJSONObject(0).getString("id")
-                    return@withContext DriveApiResult.Success(folderId)
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Search folder error", e)
-            return@withContext DriveApiResult.Error(e.localizedMessage ?: "Network error searching folder")
-        }
-
-        // Step 2: Create folder if not found
-        val createBody = JSONObject().apply {
-            put("name", FOLDER_NAME)
-            put("mimeType", "application/vnd.google-apps.folder")
-        }.toString().toRequestBody(jsonMediaType)
-
-        val createRequest = Request.Builder()
-            .url("$BASE_DRIVE_URL/files")
-            .addHeader("Authorization", "Bearer $token")
-            .post(createBody)
-            .build()
-
-        try {
-            client.newCall(createRequest).execute().use { response ->
-                if (response.code == 401) {
-                    return@withContext DriveApiResult.Error("Access token expired", isUnauthorized = true)
-                }
-                if (!response.isSuccessful) {
-                    val err = response.body?.string()?.take(200).orEmpty()
-                    return@withContext DriveApiResult.Error("Failed to create '$FOLDER_NAME' folder: HTTP ${response.code} $err")
-                }
-                val body = response.body?.string().orEmpty()
-                val folderId = JSONObject(body).getString("id")
-                return@withContext DriveApiResult.Success(folderId)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Create folder error", e)
-            return@withContext DriveApiResult.Error(e.localizedMessage ?: "Network error creating folder")
-        }
-    }
-
-    /**
-     * Search for all files that have appProperties ptask='sharedList'
-     */
-    suspend fun querySharedLists(token: String, currentUserEmail: String): DriveApiResult<List<DriveFileSummary>> = withContext(Dispatchers.IO) {
-        val query = "trashed = false and (name contains 'ptask_list_' or properties has { key='ptask' and value='sharedList' } or appProperties has { key='ptask' and value='sharedList' })"
-        val fields = "files(id,name,modifiedTime,capabilities,owners,trashed,properties,appProperties,sharedWithMe)"
-        val url = "$BASE_DRIVE_URL/files?q=${java.net.URLEncoder.encode(query, "UTF-8")}&fields=${java.net.URLEncoder.encode(fields, "UTF-8")}&spaces=drive&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=100"
-
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("Authorization", "Bearer $token")
-            .get()
-            .build()
-
-        try {
-            client.newCall(request).execute().use { response ->
-                if (response.code == 401) {
-                    return@withContext DriveApiResult.Error("Unauthorized", isUnauthorized = true)
-                }
-                if (!response.isSuccessful) {
-                    val err = response.body?.string()?.take(200).orEmpty()
-                    return@withContext DriveApiResult.Error("Query failed: HTTP ${response.code} $err")
-                }
-                val body = response.body?.string().orEmpty()
-                val json = JSONObject(body)
-                val files = json.optJSONArray("files") ?: JSONArray()
-                val summaries = mutableListOf<DriveFileSummary>()
-
-                for (i in 0 until files.length()) {
-                    val f = files.getJSONObject(i)
-                    val fileId = f.getString("id")
-                    val name = f.optString("name", "")
-                    val modifiedTime = f.optString("modifiedTime", "")
-                    val capabilities = f.optJSONObject("capabilities")
-                    val canEdit = capabilities?.optBoolean("canEdit", true) ?: true
-                    val owners = f.optJSONArray("owners")
-                    val ownerEmail = owners?.optJSONObject(0)?.optString("emailAddress", "").orEmpty()
-                    val isOwner = ownerEmail.equals(currentUserEmail, ignoreCase = true)
-
-                    summaries.add(
-                        DriveFileSummary(
-                            fileId = fileId,
-                            name = name,
-                            modifiedTime = modifiedTime,
-                            canEdit = canEdit,
-                            isOwner = isOwner,
-                            ownerEmail = ownerEmail,
-                            isTrashed = f.optBoolean("trashed", false)
+    suspend fun listSharedTaskFiles(accessToken: String): DriveApiResult<List<DriveFileSummary>> =
+        withContext(Dispatchers.IO) {
+            val q = URLEncoder.encode(
+                "trashed = false and name contains 'ptask_list_' and mimeType = 'application/json'",
+                "UTF-8"
+            )
+            val fields = URLEncoder.encode(
+                "files(id,name,mimeType,modifiedTime,capabilities(canEdit),owners(emailAddress))",
+                "UTF-8"
+            )
+            val url =
+                "https://www.googleapis.com/drive/v3/files?q=$q&fields=$fields&includeItemsFromAllDrives=true&supportsAllDrives=true&pageSize=50"
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer $accessToken")
+                .get()
+                .build()
+            try {
+                client.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        return@withContext DriveApiResult.HttpError(
+                            response.code,
+                            extractErrorSnippet(response.code, body)
                         )
-                    )
+                    }
+                    val filesArray = JSONObject(body).optJSONArray("files") ?: JSONArray()
+                    val result = buildList {
+                        for (i in 0 until filesArray.length()) {
+                            val obj = filesArray.getJSONObject(i)
+                            val canEdit = obj.optJSONObject("capabilities")?.optBoolean("canEdit", true) ?: true
+                            val ownerEmail = obj.optJSONArray("owners")?.optJSONObject(0)?.optString("emailAddress").orEmpty()
+                            add(
+                                DriveFileSummary(
+                                    id = obj.optString("id"),
+                                    name = obj.optString("name"),
+                                    mimeType = obj.optString("mimeType"),
+                                    modifiedTime = obj.optString("modifiedTime"),
+                                    canEdit = canEdit,
+                                    ownerEmail = ownerEmail
+                                )
+                            )
+                        }
+                    }.filter { it.id.isNotBlank() }
+                    DriveApiResult.Success(result)
                 }
-                return@withContext DriveApiResult.Success(summaries)
+            } catch (e: Exception) {
+                DriveApiResult.NetworkError(e.localizedMessage ?: "Network error listing Drive files")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Query shared lists error", e)
-            return@withContext DriveApiResult.Error(e.localizedMessage ?: "Failed to load shared lists")
-        }
-    }
-
-    /**
-     * Download the JSON content of a shared list along with its current metadata.
-     */
-    suspend fun downloadSharedList(
-        token: String,
-        fileId: String,
-        currentUserEmail: String
-    ): DriveApiResult<Pair<SharedTodoListFile, DriveFileSummary>> = withContext(Dispatchers.IO) {
-        // Step 1: Get metadata
-        val metaUrl = "$BASE_DRIVE_URL/files/$fileId?fields=id,name,modifiedTime,capabilities,owners,permissions,trashed&supportsAllDrives=true"
-        val metaRequest = Request.Builder()
-            .url(metaUrl)
-            .addHeader("Authorization", "Bearer $token")
-            .get()
-            .build()
-
-        val summary: DriveFileSummary
-        try {
-            client.newCall(metaRequest).execute().use { response ->
-                if (response.code == 401) {
-                    return@withContext DriveApiResult.Error("Unauthorized", isUnauthorized = true)
-                }
-                if (response.code == 404) {
-                    return@withContext DriveApiResult.Error("File not found or access revoked", isNotFound = true)
-                }
-                if (!response.isSuccessful) {
-                    return@withContext DriveApiResult.Error("Failed to fetch metadata: HTTP ${response.code}")
-                }
-                val body = response.body?.string().orEmpty()
-                val json = JSONObject(body)
-                if (json.optBoolean("trashed", false)) {
-                    return@withContext DriveApiResult.Error("This list was deleted by the owner", isNotFound = true)
-                }
-                val capabilities = json.optJSONObject("capabilities")
-                val canEdit = capabilities?.optBoolean("canEdit", true) ?: true
-                val owners = json.optJSONArray("owners")
-                val ownerEmail = owners?.optJSONObject(0)?.optString("emailAddress", "").orEmpty()
-
-                summary = DriveFileSummary(
-                    fileId = fileId,
-                    name = json.optString("name", ""),
-                    modifiedTime = json.optString("modifiedTime", ""),
-                    canEdit = canEdit,
-                    isOwner = ownerEmail.equals(currentUserEmail, ignoreCase = true),
-                    ownerEmail = ownerEmail
-                )
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error fetching file metadata", e)
-            return@withContext DriveApiResult.Error(e.localizedMessage ?: "Network error downloading file metadata")
         }
 
-        // Step 2: Download JSON file body
-        val downloadUrl = "$BASE_DRIVE_URL/files/$fileId?alt=media&supportsAllDrives=true"
-        val downloadRequest = Request.Builder()
-            .url(downloadUrl)
-            .addHeader("Authorization", "Bearer $token")
-            .get()
-            .build()
-
-        try {
-            client.newCall(downloadRequest).execute().use { response ->
-                if (response.code == 401) {
-                    return@withContext DriveApiResult.Error("Unauthorized", isUnauthorized = true)
+    suspend fun downloadListFile(accessToken: String, fileId: String): DriveApiResult<SharedTodoListFile> =
+        withContext(Dispatchers.IO) {
+            val url = "https://www.googleapis.com/drive/v3/files/$fileId?alt=media&supportsAllDrives=true"
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer $accessToken")
+                .get()
+                .build()
+            try {
+                client.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        return@withContext DriveApiResult.HttpError(
+                            response.code,
+                            extractErrorSnippet(response.code, body)
+                        )
+                    }
+                    val parsed = listFileAdapter.fromJson(body)
+                        ?: return@withContext DriveApiResult.NetworkError("Invalid list JSON format")
+                    val normalized = if (parsed.id.isBlank()) parsed.copy(id = fileId) else parsed
+                    DriveApiResult.Success(normalized)
                 }
-                if (response.code == 404) {
-                    return@withContext DriveApiResult.Error("File not found", isNotFound = true)
-                }
-                if (!response.isSuccessful) {
-                    return@withContext DriveApiResult.Error("Failed to download file content: HTTP ${response.code}")
-                }
-                val jsonContent = response.body?.string().orEmpty()
-                val sharedList = SharedTodoListFile.fromJsonString(jsonContent, driveFileIdFallback = fileId)
-                return@withContext DriveApiResult.Success(Pair(sharedList.copy(driveFileId = fileId), summary))
+            } catch (e: Exception) {
+                DriveApiResult.NetworkError(e.localizedMessage ?: "Failed to read shared list")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error downloading content", e)
-            return@withContext DriveApiResult.Error(e.localizedMessage ?: "Network error downloading list")
         }
-    }
 
-    /**
-     * Upload a new shared list JSON file to Drive into the "P Task Shared" folder.
-     */
     suspend fun createSharedListFile(
-        token: String,
-        folderId: String,
-        sharedList: SharedTodoListFile
-    ): DriveApiResult<String> = withContext(Dispatchers.IO) {
-        val fileName = "ptask_list_${sharedList.id}.json"
-
+        accessToken: String,
+        file: SharedTodoListFile
+    ): DriveApiResult<SharedTodoListFile> = withContext(Dispatchers.IO) {
+        val boundary = "ptask_boundary_${System.currentTimeMillis()}"
+        val fileName = "ptask_list_${file.title.replace(Regex("[^A-Za-z0-9_-]"), "_").take(32)}.json"
         val metadataJson = JSONObject().apply {
             put("name", fileName)
-            put("parents", JSONArray().put(folderId))
             put("mimeType", "application/json")
-            put("appProperties", JSONObject().put("ptask", "sharedList"))
-            put("properties", JSONObject().put("ptask", "sharedList"))
         }.toString()
+        val contentJson = listFileAdapter.toJson(file)
 
-        val contentString = sharedList.toJsonString()
-
-        val multipartBody = MultipartBody.Builder()
-            .setType("multipart/related".toMediaType())
-            .addPart(metadataJson.toRequestBody(jsonMediaType))
-            .addPart(contentString.toRequestBody(jsonMediaType))
-            .build()
-
-        val request = Request.Builder()
-            .url("$BASE_UPLOAD_URL?uploadType=multipart&supportsAllDrives=true")
-            .addHeader("Authorization", "Bearer $token")
-            .post(multipartBody)
-            .build()
-
-        try {
-            client.newCall(request).execute().use { response ->
-                if (response.code == 401) {
-                    return@withContext DriveApiResult.Error("Unauthorized", isUnauthorized = true)
-                }
-                if (!response.isSuccessful) {
-                    val err = response.body?.string()?.take(200).orEmpty()
-                    return@withContext DriveApiResult.Error("Failed to create file on Drive: HTTP ${response.code} $err")
-                }
-                val body = response.body?.string().orEmpty()
-                val fileId = JSONObject(body).getString("id")
-                return@withContext DriveApiResult.Success(fileId)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error creating shared file", e)
-            return@withContext DriveApiResult.Error(e.localizedMessage ?: "Failed to upload shared list")
+        val multipartPayload = buildString {
+            append("--$boundary\r\n")
+            append("Content-Type: application/json; charset=UTF-8\r\n\r\n")
+            append(metadataJson)
+            append("\r\n--$boundary\r\n")
+            append("Content-Type: application/json; charset=UTF-8\r\n\r\n")
+            append(contentJson)
+            append("\r\n--$boundary--")
         }
-    }
 
-    /**
-     * Update the content of an existing shared list file on Drive.
-     */
-    suspend fun updateSharedListFile(
-        token: String,
-        fileId: String,
-        sharedList: SharedTodoListFile
-    ): DriveApiResult<String> = withContext(Dispatchers.IO) {
-        val contentString = sharedList.toJsonString()
-        val requestBody = contentString.toRequestBody(jsonMediaType)
-
+        val body = multipartPayload.toRequestBody("multipart/related; boundary=$boundary".toMediaType())
         val request = Request.Builder()
-            .url("$BASE_UPLOAD_URL/$fileId?uploadType=media&supportsAllDrives=true")
-            .addHeader("Authorization", "Bearer $token")
-            .patch(requestBody)
-            .build()
-
-        try {
-            client.newCall(request).execute().use { response ->
-                if (response.code == 401) {
-                    return@withContext DriveApiResult.Error("Unauthorized", isUnauthorized = true)
-                }
-                if (response.code == 404) {
-                    return@withContext DriveApiResult.Error("File not found or removed", isNotFound = true)
-                }
-                if (!response.isSuccessful) {
-                    val err = response.body?.string()?.take(200).orEmpty()
-                    return@withContext DriveApiResult.Error("Failed to update file: HTTP ${response.code} $err")
-                }
-                val body = response.body?.string().orEmpty()
-                val modifiedTime = JSONObject(body).optString("modifiedTime", "")
-                return@withContext DriveApiResult.Success(modifiedTime)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error updating file", e)
-            return@withContext DriveApiResult.Error(e.localizedMessage ?: "Network error updating shared list")
-        }
-    }
-
-    /**
-     * Check modifiedTime of a file on Drive (used for 20s polling).
-     */
-    suspend fun getFileModifiedTime(token: String, fileId: String): DriveApiResult<String> = withContext(Dispatchers.IO) {
-        val url = "$BASE_DRIVE_URL/files/$fileId?fields=modifiedTime,trashed&supportsAllDrives=true"
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("Authorization", "Bearer $token")
-            .get()
-            .build()
-
-        try {
-            client.newCall(request).execute().use { response ->
-                if (response.code == 401) return@withContext DriveApiResult.Error("Unauthorized", isUnauthorized = true)
-                if (response.code == 404) return@withContext DriveApiResult.Error("File not found", isNotFound = true)
-                if (!response.isSuccessful) return@withContext DriveApiResult.Error("HTTP ${response.code}")
-                val body = response.body?.string().orEmpty()
-                val json = JSONObject(body)
-                if (json.optBoolean("trashed", false)) {
-                    return@withContext DriveApiResult.Error("This list was deleted by the owner", isNotFound = true)
-                }
-                val modifiedTime = json.optString("modifiedTime", "")
-                return@withContext DriveApiResult.Success(modifiedTime)
-            }
-        } catch (e: Exception) {
-            return@withContext DriveApiResult.Error(e.localizedMessage ?: "Failed checking modifiedTime")
-        }
-    }
-
-    /**
-     * Add member permission via Google Drive Permissions API.
-     * role: "writer" ("Can edit") or "reader" ("Can view")
-     */
-    suspend fun addPermission(
-        token: String,
-        fileId: String,
-        email: String,
-        role: String,
-        emailMessage: String = "You have been invited to collaborate on a shared todo list in P Task. Open the P Task app and check 'Shared with me'."
-    ): DriveApiResult<String> = withContext(Dispatchers.IO) {
-        val body = JSONObject().apply {
-            put("role", role)
-            put("type", "user")
-            put("emailAddress", email.trim())
-        }.toString().toRequestBody(jsonMediaType)
-
-        val encodedMsg = java.net.URLEncoder.encode(emailMessage, "UTF-8")
-        val url = "$BASE_DRIVE_URL/files/$fileId/permissions?sendNotificationEmail=true&emailMessage=$encodedMsg&supportsAllDrives=true"
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("Authorization", "Bearer $token")
+            .url("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true")
+            .header("Authorization", "Bearer $accessToken")
             .post(body)
             .build()
 
         try {
             client.newCall(request).execute().use { response ->
-                if (response.code == 401) return@withContext DriveApiResult.Error("Unauthorized", isUnauthorized = true)
-                if (!response.isSuccessful) {
-                    val err = response.body?.string().orEmpty()
-                    return@withContext DriveApiResult.Error("Failed to add member permission: HTTP ${response.code} $err")
-                }
                 val respBody = response.body?.string().orEmpty()
-                val permId = JSONObject(respBody).optString("id", "")
-                return@withContext DriveApiResult.Success(permId)
+                if (!response.isSuccessful) {
+                    return@withContext DriveApiResult.HttpError(
+                        response.code,
+                        extractErrorSnippet(response.code, respBody)
+                    )
+                }
+                val newId = JSONObject(respBody).optString("id")
+                if (newId.isBlank()) {
+                    return@withContext DriveApiResult.NetworkError("Drive did not return a file ID")
+                }
+                val updated = file.copy(id = newId)
+                updateSharedListFile(accessToken, newId, updated)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error adding permission", e)
-            return@withContext DriveApiResult.Error(e.localizedMessage ?: "Failed inviting member")
+            DriveApiResult.NetworkError(e.localizedMessage ?: "Failed to upload shared list")
         }
     }
 
-    /**
-     * Update member permission role (e.g. from writer to reader or vice versa).
-     */
-    suspend fun updatePermissionRole(
-        token: String,
+    suspend fun updateSharedListFile(
+        accessToken: String,
         fileId: String,
-        permissionId: String,
-        newRole: String
-    ): DriveApiResult<Unit> = withContext(Dispatchers.IO) {
-        val body = JSONObject().apply {
-            put("role", newRole)
-        }.toString().toRequestBody(jsonMediaType)
-
-        val url = "$BASE_DRIVE_URL/files/$fileId/permissions/$permissionId?supportsAllDrives=true"
+        file: SharedTodoListFile
+    ): DriveApiResult<SharedTodoListFile> = withContext(Dispatchers.IO) {
+        val normalized = file.copy(id = fileId)
+        val contentJson = listFileAdapter.toJson(normalized)
+        val body = contentJson.toRequestBody("application/json; charset=UTF-8".toMediaType())
         val request = Request.Builder()
-            .url(url)
-            .addHeader("Authorization", "Bearer $token")
+            .url("https://www.googleapis.com/upload/drive/v3/files/$fileId?uploadType=media&supportsAllDrives=true")
+            .header("Authorization", "Bearer $accessToken")
             .patch(body)
             .build()
-
         try {
             client.newCall(request).execute().use { response ->
-                if (response.code == 401) return@withContext DriveApiResult.Error("Unauthorized", isUnauthorized = true)
+                val respBody = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
-                    return@withContext DriveApiResult.Error("Failed to update role: HTTP ${response.code}")
+                    return@withContext DriveApiResult.HttpError(
+                        response.code,
+                        extractErrorSnippet(response.code, respBody)
+                    )
                 }
-                return@withContext DriveApiResult.Success(Unit)
+                DriveApiResult.Success(normalized)
             }
         } catch (e: Exception) {
-            return@withContext DriveApiResult.Error(e.localizedMessage ?: "Failed updating role")
+            DriveApiResult.NetworkError(e.localizedMessage ?: "Failed to update shared list")
         }
     }
 
-    /**
-     * Remove member permission from Drive file.
-     */
-    suspend fun removePermission(
-        token: String,
+    suspend fun addPermission(
+        accessToken: String,
         fileId: String,
-        permissionId: String
+        email: String,
+        role: String,
+        listTitle: String
     ): DriveApiResult<Unit> = withContext(Dispatchers.IO) {
-        val url = "$BASE_DRIVE_URL/files/$fileId/permissions/$permissionId?supportsAllDrives=true"
+        val safeRole = if (role == "reader") "reader" else "writer"
+        val emailMessage = URLEncoder.encode(
+            "You were invited to collaborate on the \"$listTitle\" list in P Task.",
+            "UTF-8"
+        )
+        val url =
+            "https://www.googleapis.com/drive/v3/files/$fileId/permissions?sendNotificationEmail=true&emailMessage=$emailMessage&supportsAllDrives=true"
+        val payload = JSONObject().apply {
+            put("type", "user")
+            put("role", safeRole)
+            put("emailAddress", email.trim())
+        }.toString()
         val request = Request.Builder()
             .url(url)
-            .addHeader("Authorization", "Bearer $token")
-            .delete()
+            .header("Authorization", "Bearer $accessToken")
+            .post(payload.toRequestBody("application/json; charset=UTF-8".toMediaType()))
             .build()
-
         try {
             client.newCall(request).execute().use { response ->
-                if (response.code == 401) return@withContext DriveApiResult.Error("Unauthorized", isUnauthorized = true)
-                if (!response.isSuccessful && response.code != 404) {
-                    return@withContext DriveApiResult.Error("Failed to remove permission: HTTP ${response.code}")
+                val respBody = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    return@withContext DriveApiResult.HttpError(
+                        response.code,
+                        extractErrorSnippet(response.code, respBody)
+                    )
                 }
-                return@withContext DriveApiResult.Success(Unit)
+                DriveApiResult.Success(Unit)
             }
         } catch (e: Exception) {
-            return@withContext DriveApiResult.Error(e.localizedMessage ?: "Failed removing member")
+            DriveApiResult.NetworkError(e.localizedMessage ?: "Failed to send invitation")
         }
     }
 
-    /**
-     * Delete file from Drive (owner only).
-     */
-    suspend fun deleteFile(
-        token: String,
-        fileId: String
-    ): DriveApiResult<Unit> = withContext(Dispatchers.IO) {
-        val url = "$BASE_DRIVE_URL/files/$fileId?supportsAllDrives=true"
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("Authorization", "Bearer $token")
-            .delete()
-            .build()
-
-        try {
-            client.newCall(request).execute().use { response ->
-                if (response.code == 401) return@withContext DriveApiResult.Error("Unauthorized", isUnauthorized = true)
-                if (!response.isSuccessful && response.code != 404) {
-                    return@withContext DriveApiResult.Error("Failed to delete file: HTTP ${response.code}")
+    suspend fun fetchPermissions(accessToken: String, fileId: String): DriveApiResult<List<ListMember>> =
+        withContext(Dispatchers.IO) {
+            val fields = URLEncoder.encode("permissions(emailAddress,role,displayName)", "UTF-8")
+            val url =
+                "https://www.googleapis.com/drive/v3/files/$fileId/permissions?fields=$fields&supportsAllDrives=true"
+            val request = Request.Builder()
+                .url(url)
+                .header("Authorization", "Bearer $accessToken")
+                .get()
+                .build()
+            try {
+                client.newCall(request).execute().use { response ->
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        return@withContext DriveApiResult.HttpError(
+                            response.code,
+                            extractErrorSnippet(response.code, body)
+                        )
+                    }
+                    val perms = JSONObject(body).optJSONArray("permissions") ?: JSONArray()
+                    val members = buildList {
+                        for (i in 0 until perms.length()) {
+                            val p = perms.getJSONObject(i)
+                            val email = p.optString("emailAddress")
+                            if (email.isNotBlank()) {
+                                add(
+                                    ListMember(
+                                        email = email,
+                                        role = p.optString("role", "writer"),
+                                        displayName = p.optString("displayName")
+                                    )
+                                )
+                            }
+                        }
+                    }
+                    DriveApiResult.Success(members)
                 }
-                return@withContext DriveApiResult.Success(Unit)
+            } catch (e: Exception) {
+                DriveApiResult.NetworkError(e.localizedMessage ?: "Failed to fetch members")
             }
-        } catch (e: Exception) {
-            return@withContext DriveApiResult.Error(e.localizedMessage ?: "Failed deleting file")
         }
-    }
 }

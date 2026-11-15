@@ -8,17 +8,19 @@ import androidx.fragment.app.FragmentActivity
 
 object BiometricAuthManager {
 
-    fun canAuthenticate(context: Context): Boolean {
-        val biometricManager = BiometricManager.from(context)
-        val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or
+    fun isBiometricAvailable(context: Context): Boolean {
+        val manager = BiometricManager.from(context)
+        val result = manager.canAuthenticate(
+            BiometricManager.Authenticators.BIOMETRIC_STRONG or
                 BiometricManager.Authenticators.DEVICE_CREDENTIAL
-        return biometricManager.canAuthenticate(authenticators) == BiometricManager.BIOMETRIC_SUCCESS
+        )
+        return result == BiometricManager.BIOMETRIC_SUCCESS
     }
 
-    fun promptBiometric(
+    fun authenticate(
         activity: FragmentActivity,
-        title: String = "Unlock P Task",
-        subtitle: String = "Verify your biometric identity to access locked lists",
+        title: String = "Unlock Protected List",
+        subtitle: String = "Verify your identity to access this list",
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
@@ -31,31 +33,23 @@ object BiometricAuthManager {
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                 super.onAuthenticationError(errorCode, errString)
-                if (errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
-                    errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON
-                ) {
-                    onError("Authentication cancelled")
-                } else {
-                    onError(errString.toString())
-                }
+                onError(errString.toString())
             }
 
             override fun onAuthenticationFailed() {
                 super.onAuthenticationFailed()
-                onError("Authentication failed. Please try again.")
             }
         }
 
+        val prompt = BiometricPrompt(activity, executor, callback)
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
             .setTitle(title)
             .setSubtitle(subtitle)
             .setAllowedAuthenticators(
                 BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                    BiometricManager.Authenticators.DEVICE_CREDENTIAL
             )
             .build()
-
-        val biometricPrompt = BiometricPrompt(activity, executor, callback)
-        biometricPrompt.authenticate(promptInfo)
+        prompt.authenticate(promptInfo)
     }
 }

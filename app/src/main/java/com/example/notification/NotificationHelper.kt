@@ -23,7 +23,6 @@ import kotlinx.coroutines.launch
 object NotificationHelper {
 
     const val CHANNEL_ID_DEFAULT = "omnitask_reminders_channel"
-    const val NOTIFICATION_ID_BASE = 1000
 
     val AVAILABLE_SOUNDS = listOf(
         SoundOption("chime", "Harmonic Chime", "Soft chime bells"),
@@ -134,19 +133,11 @@ object NotificationHelper {
         )
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    reminderEpoch,
-                    pendingIntent
-                )
-            } else {
-                alarmManager.setExact(
-                    AlarmManager.RTC_WAKEUP,
-                    reminderEpoch,
-                    pendingIntent
-                )
-            }
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                reminderEpoch,
+                pendingIntent
+            )
         } catch (_: SecurityException) {
             alarmManager.set(
                 AlarmManager.RTC_WAKEUP,
@@ -205,8 +196,6 @@ object NotificationHelper {
             .build()
 
         notificationManager.notify(taskId.hashCode(), notification)
-
-        // Play the chosen melodic alert tone!
         playSoundPreview(soundKey)
     }
 }

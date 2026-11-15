@@ -8,32 +8,24 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.CloudSync
-import androidx.compose.material.icons.filled.Fingerprint
-import androidx.compose.material.icons.filled.GraphicEq
-import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,296 +36,280 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.NoCredentialException
 import com.example.R
+import com.example.ui.theme.IndigoDeep
 import com.example.ui.theme.IndigoLight
 import com.example.ui.theme.IndigoPrimary
+import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential.Companion.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL
 import com.google.firebase.Firebase
 import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+
+private const val TAG = "AuthScreen"
 
 @Composable
 fun AuthScreen(
     onAuthSuccess: () -> Unit
 ) {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
-    val credentialManager = remember { CredentialManager.create(context) }
+    val scope = rememberCoroutineScope()
+    val credentialManager = remember(context) { CredentialManager.create(context) }
+
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = MaterialTheme.colorScheme.background
+    LaunchedEffect(Unit) {
+        attemptAutoSignIn(
+            context = context,
+            credentialManager = credentialManager,
+            onAuthSuccess = onAuthSuccess,
+            onUnauthenticated = {},
+            scope = scope
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(IndigoDeep, IndigoPrimary, Color(0xFF0F172A))
+                )
+            )
+            .safeDrawingPadding()
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Box(
+        Card(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
-            contentAlignment = Alignment.Center
+                .fillMaxWidth()
+                .widthIn(max = 460.dp),
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
         ) {
             Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 24.dp, vertical = 32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-                modifier = Modifier.fillMaxWidth()
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                // App Emblem
                 Box(
                     modifier = Modifier
-                        .size(100.dp)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(
-                            Brush.linearGradient(
-                                listOf(IndigoPrimary, IndigoLight)
-                            )
-                        ),
+                        .size(76.dp)
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(Brush.linearGradient(listOf(IndigoPrimary, IndigoLight))),
                     contentAlignment = Alignment.Center
                 ) {
                     Image(
                         painter = painterResource(id = R.drawable.ic_launcher_fg_img),
                         contentDescription = "P Task Logo",
-                        modifier = Modifier.size(80.dp)
+                        modifier = Modifier.size(56.dp)
                     )
                 }
 
-                Spacer(modifier = Modifier.height(20.dp))
-
                 Text(
-                    text = "P Task",
-                    style = MaterialTheme.typography.headlineLarge.copy(
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.5.sp
-                    ),
-                    color = MaterialTheme.colorScheme.onBackground
+                    text = "Welcome to P Task",
+                    style = MaterialTheme.typography.headlineMedium,
+                    textAlign = TextAlign.Center
                 )
 
                 Text(
-                    text = "Your smart todo list for everything",
-                    style = MaterialTheme.typography.bodyLarge,
+                    text = "Cloud-synced todo lists, 1-step Google Drive collaboration, biometric locks, reminders, and Gemini voice capture.",
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 6.dp)
+                    textAlign = TextAlign.Center
                 )
 
-                Spacer(modifier = Modifier.height(28.dp))
-
-                // Feature Highlights Card
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    ),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        FeatureHighlightRow(
-                            icon = Icons.Default.CloudSync,
-                            title = "Real-time Cloud Sync",
-                            subtitle = "Access all your lists across every device"
-                        )
-                        FeatureHighlightRow(
-                            icon = Icons.Default.Fingerprint,
-                            title = "Biometric Privacy",
-                            subtitle = "Lock sensitive lists with fingerprint or face"
-                        )
-                        FeatureHighlightRow(
-                            icon = Icons.Default.GraphicEq,
-                            title = "Voice & AI NLP",
-                            subtitle = "Create tasks instantly using natural speech"
-                        )
-                        FeatureHighlightRow(
-                            icon = Icons.Default.NotificationsActive,
-                            title = "Custom Alert Sounds",
-                            subtitle = "Harmonic chimes and melodic reminders"
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(32.dp))
-
-                if (errorMessage != null) {
+                if (!errorMessage.isNullOrBlank()) {
                     Text(
                         text = errorMessage!!,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.padding(bottom = 12.dp)
+                        textAlign = TextAlign.Center
                     )
                 }
 
-                // Interactive Sign in with Google Button
+                Spacer(modifier = Modifier.height(4.dp))
+
                 Button(
                     onClick = {
-                        isLoading = true
                         errorMessage = null
-                        signInWithGoogle(
+                        isLoading = true
+                        onGoogleSignInClicked(
                             context = context,
                             credentialManager = credentialManager,
-                            scope = coroutineScope,
-                            onSuccess = {
+                            onAuthSuccess = {
                                 isLoading = false
                                 onAuthSuccess()
                             },
-                            onError = { err ->
+                            onAuthError = { msg ->
                                 isLoading = false
-                                errorMessage = err
+                                errorMessage = msg
                             },
-                            onCancelled = {
+                            scope = scope,
+                            onAuthCancelled = {
                                 isLoading = false
                             }
                         )
                     },
+                    enabled = !isLoading,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(52.dp)
-                        .testTag("sign_in_button"),
+                        .testTag("google_sign_in_button"),
                     shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
-                    ),
-                    enabled = !isLoading
+                    colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary)
                 ) {
                     if (isLoading) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            color = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(22.dp),
+                            color = Color.White,
                             strokeWidth = 2.dp
                         )
                     } else {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.CheckCircle,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                text = stringResource(R.string.sign_in_with_google),
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            )
-                        }
+                        Text(
+                            text = "Sign in with Google",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color.White
+                        )
                     }
                 }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                Text(
-                    text = "Sync seamlessly • Powered by Google Cloud & Gemini",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                    textAlign = TextAlign.Center
-                )
             }
         }
     }
 }
 
-@Composable
-private fun FeatureHighlightRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String
+fun attemptAutoSignIn(
+    context: Context,
+    credentialManager: CredentialManager,
+    onAuthSuccess: () -> Unit,
+    onUnauthenticated: () -> Unit,
+    scope: CoroutineScope
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Box(
-            modifier = Modifier
-                .size(36.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primaryContainer),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.size(20.dp)
-            )
-        }
-        Spacer(modifier = Modifier.width(12.dp))
-        Column {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+    if (Firebase.auth.currentUser != null) {
+        onAuthSuccess()
+        return
+    }
+    val clientId = try {
+        context.getString(R.string.default_web_client_id)
+    } catch (_: Exception) {
+        onUnauthenticated()
+        return
+    }
+
+    val googleIdOption = GetGoogleIdOption.Builder()
+        .setFilterByAuthorizedAccounts(true)
+        .setServerClientId(clientId)
+        .setAutoSelectEnabled(true)
+        .build()
+
+    val request = GetCredentialRequest.Builder()
+        .addCredentialOption(googleIdOption)
+        .build()
+
+    scope.launch {
+        try {
+            val result = credentialManager.getCredential(context, request)
+            val credential = result.credential
+            if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                val idToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
+                val firebaseCred = GoogleAuthProvider.getCredential(idToken, null)
+                Firebase.auth.signInWithCredential(firebaseCred).await()
+                onAuthSuccess()
+            } else {
+                onUnauthenticated()
+            }
+        } catch (_: NoCredentialException) {
+            onUnauthenticated()
+        } catch (_: Exception) {
+            onUnauthenticated()
         }
     }
 }
 
-private fun signInWithGoogle(
+fun onGoogleSignInClicked(
     context: Context,
     credentialManager: CredentialManager,
+    onAuthSuccess: () -> Unit,
+    onAuthError: (String) -> Unit,
     scope: CoroutineScope,
-    onSuccess: () -> Unit,
-    onError: (String) -> Unit,
-    onCancelled: () -> Unit
+    onAuthCancelled: () -> Unit = {}
 ) {
     val clientId = try {
         context.getString(R.string.default_web_client_id)
-    } catch (e: Exception) {
-        onError("Google Sign-In configuration missing: default_web_client_id not found")
+    } catch (_: Exception) {
+        onAuthError("Google Sign-In configuration missing: default_web_client_id not found.")
         return
     }
 
-    val signInOption = com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption.Builder(
-        serverClientId = clientId
-    ).build()
-
+    val signInOption = GetSignInWithGoogleOption.Builder(serverClientId = clientId).build()
     val request = GetCredentialRequest.Builder()
         .addCredentialOption(signInOption)
         .build()
 
     scope.launch {
         try {
-            val result = credentialManager.getCredential(context as Activity, request)
+            val activity = context as? Activity
+                ?: throw IllegalStateException("Activity context required for Google Sign-In")
+            val result = credentialManager.getCredential(activity, request)
             val credential = result.credential
             if (credential is CustomCredential && credential.type == TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
-                val authCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
-                Firebase.auth.signInWithCredential(authCredential).await()
-                onSuccess()
+                val idToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
+                val firebaseCred = GoogleAuthProvider.getCredential(idToken, null)
+                Firebase.auth.signInWithCredential(firebaseCred).await()
+                onAuthSuccess()
             } else {
-                onError("Unexpected credential response")
+                onAuthError("Unexpected credential type received.")
             }
         } catch (e: GetCredentialCancellationException) {
-            Log.w("Auth", "Google Sign-In cancelled: ${e.message}", e)
-            onCancelled()
+            Log.w(TAG, "Google Sign-In cancelled or dismissed: ${e.message}", e)
+            onAuthCancelled()
+        } catch (e: NoCredentialException) {
+            Log.w(TAG, "No Google credential available: ${e.message}", e)
+            onAuthError("No Google account available on this device.")
         } catch (e: Exception) {
-            Log.e("Auth", "Google Sign-In failed", e)
-            onError(e.localizedMessage ?: "Sign-in failed. Please try again.")
+            Log.e(TAG, "Google Sign-In failed", e)
+            onAuthError(e.localizedMessage ?: "Sign in failed.")
+        }
+    }
+}
+
+fun performGoogleSignOut(
+    credentialManager: CredentialManager,
+    scope: CoroutineScope,
+    onSignOutComplete: () -> Unit
+) {
+    scope.launch {
+        withContext(NonCancellable) {
+            try {
+                credentialManager.clearCredentialState(ClearCredentialStateRequest())
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to clear credential state: ${e.message}")
+            } finally {
+                Firebase.auth.signOut()
+                onSignOutComplete()
+            }
         }
     }
 }

@@ -1,14 +1,11 @@
 package com.example.ui.dashboard
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,484 +15,356 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Alarm
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.CalendarToday
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.CloudQueue
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Favorite
-import androidx.compose.material.icons.filled.Fingerprint
-import androidx.compose.material.icons.filled.Flight
-import androidx.compose.material.icons.filled.FormatListBulleted
-import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.ShoppingCart
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Work
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.example.data.model.TaskItem
-import com.example.data.model.TodoList
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
-
-import androidx.compose.material.icons.filled.CloudQueue
-import androidx.compose.material.icons.filled.Group
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material3.Button
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import com.example.data.drive.DriveColorPalette
 import com.example.data.drive.SharedListState
+import com.example.data.model.TaskItem
+import com.example.data.model.TodoList
+import com.example.ui.listdialog.iconForListKey
+import com.example.ui.theme.CyanAccent
+import com.example.ui.theme.IndigoDeep
+import com.example.ui.theme.IndigoPrimary
+import com.example.ui.viewmodel.UiState
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
-    lists: List<TodoList>,
+    listsState: UiState<List<TodoList>>,
+    sharedLists: List<SharedListState>,
     allTasks: List<TaskItem>,
-    searchQuery: String,
-    selectedCategory: String?,
-    availableCategories: List<String> = emptyList(),
-    sharedListsMap: Map<String, SharedListState> = emptyMap(),
-    currentUserEmail: String = "",
-    isDriveConnected: Boolean = true,
-    isRefreshingDrive: Boolean = false,
-    onSearchChange: (String) -> Unit,
-    onCategoryChange: (String?) -> Unit,
-    onSelectList: (TodoList) -> Unit,
-    onAddNewList: () -> Unit,
+    isDriveConnected: Boolean,
+    isRefreshingDrive: Boolean,
+    snackbarHostState: SnackbarHostState,
+    onRefreshDrive: () -> Unit,
+    onConnectDrive: () -> Unit,
+    onOpenList: (TodoList) -> Unit,
+    onOpenShare: (TodoList) -> Unit,
     onEditList: (TodoList) -> Unit,
     onDeleteList: (TodoList) -> Unit,
-    onAddNewTask: () -> Unit,
-    onToggleTask: (TaskItem) -> Unit,
-    onEditTask: (TaskItem) -> Unit,
-    onOpenVoiceNlp: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onShareList: (TodoList) -> Unit = {},
-    onRefreshDrive: () -> Unit = {},
-    onConnectDrive: () -> Unit = {}
+    onCreateListClick: () -> Unit,
+    onOpenVoiceCapture: () -> Unit,
+    onOpenSettings: () -> Unit
 ) {
-    var isSearchActive by remember { mutableStateOf(false) }
-    val coroutineScope = rememberCoroutineScope()
+    var showSearch by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
 
-    // Temporary map of tasks newly marked complete with timestamp (kept in upcoming for 1.5s)
-    val recentlyCompleted = remember { mutableStateMapOf<String, Long>() }
-
-    // Categories list starting with "All" followed by user's ordered categories
-    val categories = remember(lists, availableCategories) {
-        val set = linkedSetOf("All")
-        if (availableCategories.isNotEmpty()) {
-            set.addAll(availableCategories)
-        }
-        lists.map { it.category }.filter { it.isNotBlank() }.forEach { set.add(it) }
-        set.toList()
+    val personalLists = (listsState as? UiState.Success)?.data.orEmpty()
+    val sharedTodoLists = remember(sharedLists) {
+        sharedLists.map { state -> state.file.toTodoList(isReadOnly = state.isReadOnly) }
+    }
+    val combinedLists = remember(personalLists, sharedTodoLists) {
+        (personalLists + sharedTodoLists)
+            .filter { it.id.isNotBlank() }
+            .distinctBy { it.id }
     }
 
-    // Filter lists by category
-    val filteredLists = remember(lists, selectedCategory) {
-        val base = if (selectedCategory == null || selectedCategory == "All") {
-            lists
+    val filteredLists = remember(combinedLists, allTasks, searchQuery) {
+        val q = searchQuery.trim()
+        if (q.isEmpty()) {
+            combinedLists
         } else {
-            lists.filter { it.category.equals(selectedCategory, ignoreCase = true) }
+            combinedLists.filter { list ->
+                list.title.contains(q, ignoreCase = true) ||
+                    allTasks.any { it.listId == list.id && it.title.contains(q, ignoreCase = true) }
+            }
         }
-        base.distinctBy { it.id }
     }
 
-    // Filter tasks if searching
-    val searchResults = remember(allTasks, searchQuery) {
-        if (searchQuery.isBlank()) emptyList()
-        else allTasks.filter {
-            it.title.contains(searchQuery, ignoreCase = true) ||
-                    it.notes.contains(searchQuery, ignoreCase = true)
-        }.distinctBy { it.id }
-    }
-
-    // Quick upcoming incomplete tasks (keeps newly completed items for 1.5s before moving away)
-    val upcomingTasks = remember(allTasks, recentlyCompleted.toMap()) {
-        allTasks.filter { !it.isCompleted || recentlyCompleted.containsKey(it.id) }.distinctBy { it.id }.take(6)
-    }
-
-    // Done today tasks
-    val doneTodayTasks = remember(allTasks, recentlyCompleted.toMap()) {
-        allTasks.filter { it.isCompleted && !recentlyCompleted.containsKey(it.id) && isToday(it.completedAt) }.distinctBy { it.id }
-    }
+    val activeTaskCount = remember(allTasks) { allTasks.count { !it.isCompleted } }
+    val urgentTaskCount = remember(allTasks) { allTasks.count { !it.isCompleted && it.priority == "URGENT" } }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(MaterialTheme.colorScheme.primary),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.CheckCircle,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onPrimary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
-                            Text(
-                                text = "P Task",
-                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                            )
-                            Text(
-                                text = "A todo list for everything",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                    Column {
+                        Text(
+                            text = "P Task",
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                        )
+                        Text(
+                            text = "${combinedLists.size} lists • $activeTaskCount active",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 },
                 actions = {
-                    IconButton(onClick = onRefreshDrive, modifier = Modifier.testTag("refresh_drive_btn")) {
-                        Icon(imageVector = Icons.Default.Refresh, contentDescription = "Refresh shared lists")
+                    IconButton(
+                        onClick = {
+                            if (isDriveConnected) onRefreshDrive() else onConnectDrive()
+                        },
+                        modifier = Modifier.testTag("refresh_drive_button")
+                    ) {
+                        if (isRefreshingDrive) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Sync Drive lists"
+                            )
+                        }
                     }
-                    IconButton(onClick = { isSearchActive = !isSearchActive }) {
-                        Icon(imageVector = Icons.Default.Search, contentDescription = "Search tasks")
-                    }
-                    IconButton(onClick = onOpenVoiceNlp) {
+                    IconButton(
+                        onClick = {
+                            showSearch = !showSearch
+                            if (!showSearch) searchQuery = ""
+                        },
+                        modifier = Modifier.testTag("search_toggle_button")
+                    ) {
                         Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = "AI Voice Task",
-                            tint = MaterialTheme.colorScheme.primary
+                            imageVector = if (showSearch) Icons.Default.Close else Icons.Default.Search,
+                            contentDescription = "Search lists"
                         )
                     }
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(imageVector = Icons.Default.Settings, contentDescription = "Settings")
+                    IconButton(
+                        onClick = onOpenSettings,
+                        modifier = Modifier.testTag("settings_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Open settings"
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
+                    containerColor = MaterialTheme.colorScheme.background
                 )
             )
         },
+        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
         floatingActionButton = {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                FloatingActionButton(
-                    onClick = onOpenVoiceNlp,
+                SmallFloatingActionButton(
+                    onClick = onOpenVoiceCapture,
                     containerColor = MaterialTheme.colorScheme.secondaryContainer,
                     contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                     modifier = Modifier.testTag("voice_fab")
                 ) {
-                    Icon(Icons.Default.AutoAwesome, contentDescription = "Voice Task")
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = "Quick AI voice capture"
+                    )
                 }
-
                 ExtendedFloatingActionButton(
-                    onClick = onAddNewTask,
+                    onClick = onCreateListClick,
                     icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                    text = { Text("New Task") },
+                    text = { Text("New List") },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
-                    modifier = Modifier.testTag("add_task_fab")
+                    modifier = Modifier.testTag("new_list_fab")
                 )
             }
         }
-    ) { padding ->
+    ) { innerPadding ->
         PullToRefreshBox(
             isRefreshing = isRefreshingDrive,
-            onRefresh = onRefreshDrive,
+            onRefresh = {
+                if (isDriveConnected) onRefreshDrive() else onConnectDrive()
+            },
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
+                .padding(innerPadding)
         ) {
-            LazyColumn(
+            Box(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                contentAlignment = Alignment.TopCenter
             ) {
-            // Search Input if active
-            if (isSearchActive) {
-                item {
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = onSearchChange,
-                        placeholder = { Text("Search tasks across all lists...") },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                        trailingIcon = {
-                            if (searchQuery.isNotEmpty()) {
-                                IconButton(onClick = { onSearchChange("") }) {
-                                    Icon(Icons.Default.Clear, contentDescription = "Clear search")
-                                }
-                            }
-                        },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("search_tasks_input"),
-                        shape = RoundedCornerShape(12.dp),
-                        singleLine = true
-                    )
-                }
-            }
-
-            // Search Results Section
-            if (searchQuery.isNotBlank()) {
-                item {
-                    Text(
-                        text = "Search Results (${searchResults.size})",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-
-                if (searchResults.isEmpty()) {
-                    item {
-                        Text(
-                            text = "No tasks found matching \"$searchQuery\"",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                } else {
-                    items(searchResults, key = { "search_${it.id}" }) { task ->
-                        val parentList = lists.find { it.id == task.listId }
-                            ?: sharedListsMap[task.listId]?.file?.toTodoList()
-                        TaskSummaryItem(
-                            task = task,
-                            listName = parentList?.title ?: "P Task",
-                            listColor = parentList?.colorHex ?: "#6366F1",
-                            onToggle = { onToggleTask(task) },
-                            onEdit = { onEditTask(task) }
-                        )
-                    }
-                }
-            } else {
-                // Category Filter Chips
-                item {
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        categories.forEach { cat ->
-                            val isSelected = (selectedCategory == null && cat == "All") || selectedCategory == cat
-                            FilterChip(
-                                selected = isSelected,
-                                onClick = {
-                                    onCategoryChange(if (cat == "All") null else cat)
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .widthIn(max = 840.dp),
+                    contentPadding = PaddingValues(
+                        start = 16.dp,
+                        end = 16.dp,
+                        top = 8.dp,
+                        bottom = 120.dp
+                    ),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    item(key = "search_bar") {
+                        AnimatedVisibility(visible = showSearch) {
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                label = { Text("Search lists or tasks") },
+                                singleLine = true,
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                                trailingIcon = {
+                                    if (searchQuery.isNotEmpty()) {
+                                        IconButton(onClick = { searchQuery = "" }) {
+                                            Icon(Icons.Default.Close, contentDescription = "Clear search")
+                                        }
+                                    }
                                 },
-                                label = { Text(cat) },
-                                shape = RoundedCornerShape(10.dp)
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("dashboard_search_input")
                             )
                         }
                     }
-                }
 
-                // Section Header: My Lists
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "My Lists",
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                        )
-                        IconButton(onClick = onAddNewList, modifier = Modifier.testTag("add_list_button")) {
-                            Icon(Icons.Default.Add, contentDescription = "New List")
-                        }
-                    }
-                }
-
-                // Empty Lists state
-                if (filteredLists.isEmpty()) {
-                    item {
+                    item(key = "hero_summary") {
                         Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                            ),
-                            shape = RoundedCornerShape(16.dp)
+                            shape = RoundedCornerShape(22.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(
+                            Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(IndigoDeep, IndigoPrimary, CyanAccent)
+                                        )
+                                    )
+                                    .padding(18.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.FormatListBulleted,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(44.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.height(12.dp))
-                                Text(
-                                    text = "No lists in this category",
-                                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = "Tap + to create a custom list for your daily tasks or projects.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // User Lists Grid / Cards
-                items(filteredLists, key = { it.id }) { list ->
-                    val tasksForList = allTasks.filter { it.listId == list.id }
-                    val completedCount = tasksForList.count { it.isCompleted }
-                    val totalCount = tasksForList.size
-                    val progress = if (totalCount > 0) completedCount.toFloat() / totalCount.toFloat() else 0f
-
-                    val isShared = sharedListsMap.containsKey(list.id)
-                    TodoListCard(
-                        list = list,
-                        taskCount = totalCount,
-                        completedCount = completedCount,
-                        progress = progress,
-                        isShared = isShared,
-                        onClick = { onSelectList(list) },
-                        onShare = { onShareList(list) },
-                        onEdit = { onEditList(list) },
-                        onDelete = { onDeleteList(list) }
-                    )
-                }
-
-                // Shared with me Section (Google Drive Shared Lists shared with me by others)
-                val currentEmailClean = currentUserEmail.trim().lowercase()
-                val sharedWithMeStates = sharedListsMap.values.filter { state ->
-                    val ownerEmail = state.file.ownerEmail.trim().lowercase()
-                    ownerEmail.isNotBlank() && (currentEmailClean.isBlank() || ownerEmail != currentEmailClean)
-                }.distinctBy { it.file.id }
-
-                if (sharedWithMeStates.isNotEmpty() || !isDriveConnected) {
-                    item {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Group,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = if (sharedWithMeStates.isNotEmpty())
-                                        "Shared with me (${sharedWithMeStates.size})"
-                                    else
-                                        "Shared with me",
-                                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text(
+                                            text = "Today's Focus",
+                                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                                            color = Color.White
+                                        )
+                                        Text(
+                                            text = "$activeTaskCount open tasks • $urgentTaskCount urgent",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = Color.White.copy(alpha = 0.9f)
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = Color.White.copy(alpha = 0.16f)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Group,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Text(
+                                                text = "${sharedTodoLists.size} shared",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = Color.White
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
                     if (!isDriveConnected) {
-                        item {
+                        item(key = "drive_connect_banner") {
                             Card(
-                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(16.dp),
                                 colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
                                 ),
-                                shape = RoundedCornerShape(16.dp)
+                                modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .padding(16.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                        .padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.CloudQueue,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(32.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = "Connect Google Drive",
-                                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                    Row(
+                                        modifier = Modifier.weight(1f),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CloudQueue,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary
                                         )
-                                        Text(
-                                            text = "Grant Drive access to share lists or open lists shared with your Gmail.",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                        Column {
+                                            Text(
+                                                text = "Share Lists via Google Drive",
+                                                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                                            )
+                                            Text(
+                                                text = "Connect Drive once to see shared lists and invite by email.",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                     }
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Button(
                                         onClick = onConnectDrive,
-                                        shape = RoundedCornerShape(12.dp),
-                                        modifier = Modifier.testTag("dashboard_connect_drive_btn")
+                                        modifier = Modifier.testTag("connect_drive_banner_button")
                                     ) {
                                         Text("Connect")
                                     }
@@ -504,639 +373,263 @@ fun DashboardScreen(
                         }
                     }
 
-                    items(sharedWithMeStates, key = { "shared_${it.file.id}" }) { state ->
-                        val tasksForList = state.file.tasks.filterNot { it.isDeleted }
-                        val completedCount = tasksForList.count { it.isCompleted }
-                        val totalCount = tasksForList.size
-                        val progress = if (totalCount > 0) completedCount.toFloat() / totalCount.toFloat() else 0f
-                        val todoList = state.file.toTodoList(isReadOnly = state.isReadOnly)
-
-                        SharedTodoListCard(
-                            sharedState = state,
-                            taskCount = totalCount,
-                            completedCount = completedCount,
-                            progress = progress,
-                            onClick = { onSelectList(todoList) },
-                            onShare = { onShareList(todoList) },
-                            onDelete = { onDeleteList(todoList) }
-                        )
-                    }
-                }
-
-                // Section: Today & Upcoming Tasks
-                if (upcomingTasks.isNotEmpty()) {
-                    item {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Today & Urgent Tasks",
-                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                            )
-                            Text(
-                                text = "${upcomingTasks.count { !it.isCompleted }} pending",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    items(upcomingTasks, key = { it.id }) { task ->
-                        val parentList = lists.find { it.id == task.listId }
-                            ?: sharedListsMap[task.listId]?.file?.toTodoList()
-                        TaskSummaryItem(
-                            task = task,
-                            listName = parentList?.title ?: "P Task",
-                            listColor = parentList?.colorHex ?: "#6366F1",
-                            onToggle = {
-                                if (!task.isCompleted) {
-                                    recentlyCompleted[task.id] = System.currentTimeMillis()
-                                    coroutineScope.launch {
-                                        delay(1500L)
-                                        recentlyCompleted.remove(task.id)
-                                    }
-                                } else {
-                                    recentlyCompleted.remove(task.id)
+                    when (listsState) {
+                        UiState.Loading -> {
+                            item(key = "loading_indicator") {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 32.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator()
                                 }
-                                onToggleTask(task)
-                            },
-                            onEdit = { onEditTask(task) }
-                        )
+                            }
+                        }
+                        is UiState.Error -> {
+                            item(key = "error_banner") {
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = MaterialTheme.colorScheme.errorContainer
+                                    ),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = listsState.message,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.padding(16.dp)
+                                    )
+                                }
+                            }
+                        }
+                        is UiState.Success -> Unit
                     }
-                }
 
-                // Section: Done Today Tasks (moved after 1.5s)
-                if (doneTodayTasks.isNotEmpty()) {
-                    item {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Done today (${doneTodayTasks.size})",
-                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "Completed",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                    if (listsState is UiState.Success && filteredLists.isEmpty()) {
+                        item(key = "empty_lists_state") {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(18.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(28.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = if (searchQuery.isBlank()) "No lists yet" else "No matching lists",
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                    Text(
+                                        text = if (searchQuery.isBlank()) {
+                                            "Tap New List below to create your first task list."
+                                        } else {
+                                            "Try a different search keyword."
+                                        },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    } else {
+                        items(
+                            items = filteredLists,
+                            key = { it.id }
+                        ) { list ->
+                            val listTasks = allTasks.filter { it.listId == list.id }
+                            val openCount = listTasks.count { !it.isCompleted }
+                            val doneCount = listTasks.count { it.isCompleted }
+                            val sharedState = sharedLists.find { it.file.id == list.id }
+
+                            TodoListCard(
+                                list = list,
+                                sharedState = sharedState,
+                                openCount = openCount,
+                                doneCount = doneCount,
+                                onOpen = { onOpenList(list) },
+                                onShare = { onOpenShare(list) },
+                                onEdit = { onEditList(list) },
+                                onDelete = { onDeleteList(list) }
                             )
                         }
                     }
-
-                    items(doneTodayTasks, key = { it.id }) { task ->
-                        val parentList = lists.find { it.id == task.listId }
-                            ?: sharedListsMap[task.listId]?.file?.toTodoList()
-                        TaskSummaryItem(
-                            task = task,
-                            listName = parentList?.title ?: "P Task",
-                            listColor = parentList?.colorHex ?: "#6366F1",
-                            onToggle = { onToggleTask(task) },
-                            onEdit = { onEditTask(task) }
-                        )
-                    }
-                }
-
-                item {
-                    Spacer(modifier = Modifier.height(48.dp))
                 }
             }
-        }
         }
     }
 }
 
 @Composable
-fun TodoListCard(
+private fun TodoListCard(
     list: TodoList,
-    taskCount: Int,
-    completedCount: Int,
-    progress: Float,
-    isShared: Boolean = false,
-    onClick: () -> Unit,
-    onShare: () -> Unit = {},
+    sharedState: SharedListState?,
+    openCount: Int,
+    doneCount: Int,
+    onOpen: () -> Unit,
+    onShare: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
-    val accentColor = remember(list.colorHex) {
-        try {
-            Color(android.graphics.Color.parseColor(list.colorHex))
-        } catch (_: Exception) {
-            Color(0xFF6366F1)
-        }
-    }
+    val accent = remember(list.colorHex) { DriveColorPalette.parseColor(list.colorHex) }
+    val memberCount = sharedState?.file?.members?.size ?: 0
 
     Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
-            .testTag("list_card_${list.id}"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-        )
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // List Icon with accent background
-                Box(
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(accentColor.copy(alpha = 0.18f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = resolveListIcon(list.icon),
-                        contentDescription = null,
-                        tint = accentColor,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = list.title,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        if (isShared) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Icon(
-                                imageVector = Icons.Default.Share,
-                                contentDescription = "Shared on Google Drive",
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                        if (list.isPinned) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Icon(
-                                imageVector = Icons.Default.PushPin,
-                                contentDescription = "Pinned",
-                                tint = accentColor,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                        if (list.isLocked) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Icon(
-                                imageVector = Icons.Default.Lock,
-                                contentDescription = "Locked",
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-
-                    if (list.description.isNotBlank()) {
-                        Text(
-                            text = list.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    Text(
-                        text = list.category,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                }
-
-                // Card actions menu
-                Box {
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "List Options")
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Share") },
-                            leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
-                            onClick = {
-                                menuExpanded = false
-                                onShare()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Edit Details") },
-                            leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
-                            onClick = {
-                                menuExpanded = false
-                                onEdit()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Delete List", color = MaterialTheme.colorScheme.error) },
-                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                            onClick = {
-                                menuExpanded = false
-                                onDelete()
-                            }
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Progress Indicators
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "$completedCount of $taskCount completed",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "${(progress * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                    color = accentColor
-                )
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(CircleShape),
-                color = accentColor,
-                trackColor = accentColor.copy(alpha = 0.2f),
-                strokeCap = StrokeCap.Round
-            )
-        }
-    }
-}
-
-@Composable
-fun SharedTodoListCard(
-    sharedState: SharedListState,
-    taskCount: Int,
-    completedCount: Int,
-    progress: Float,
-    onClick: () -> Unit,
-    onShare: () -> Unit,
-    onDelete: () -> Unit
-) {
-    var menuExpanded by remember { mutableStateOf(false) }
-    val accentColor = remember(sharedState.file.colorHex) {
-        try {
-            Color(android.graphics.Color.parseColor(sharedState.file.colorHex))
-        } catch (_: Exception) {
-            Color(0xFF6366F1)
-        }
-    }
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onClick() }
-            .testTag("shared_list_card_${sharedState.file.id}"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-        )
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // List Icon with accent background
-                Box(
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(accentColor.copy(alpha = 0.18f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = resolveListIcon(sharedState.file.icon),
-                        contentDescription = null,
-                        tint = accentColor,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = sharedState.file.name,
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Icon(
-                            imageVector = Icons.Default.Share,
-                            contentDescription = "Google Drive Shared List",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        if (sharedState.isReadOnly) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = MaterialTheme.colorScheme.errorContainer
-                            ) {
-                                Text(
-                                    text = "View only",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                    fontSize = 9.sp,
-                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    if (sharedState.file.description.isNotBlank()) {
-                        Text(
-                            text = sharedState.file.description,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    // Members Avatars and Count
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        val displayMembers = sharedState.file.members.take(4)
-                        displayMembers.forEach { member ->
-                            val memberColor = DriveColorPalette.parseColor(member.color)
-                            val initial = (member.name.ifBlank { member.email }).firstOrNull()?.uppercaseChar() ?: 'U'
-                            Box(
-                                modifier = Modifier
-                                    .padding(end = 4.dp)
-                                    .size(20.dp)
-                                    .clip(CircleShape)
-                                    .background(memberColor),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = initial.toString(),
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 10.sp
-                                )
-                            }
-                        }
-                        if (sharedState.file.members.size > 4) {
-                            Text(
-                                text = "+${sharedState.file.members.size - 4}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(end = 4.dp)
-                            )
-                        }
-                        Text(
-                            text = "${sharedState.file.members.size} members",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                    }
-                }
-
-                // Card actions menu
-                Box {
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(Icons.Default.MoreVert, contentDescription = "Shared List Options")
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Open List") },
-                            onClick = {
-                                menuExpanded = false
-                                onClick()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Share") },
-                            leadingIcon = { Icon(Icons.Default.Share, contentDescription = null) },
-                            onClick = {
-                                menuExpanded = false
-                                onShare()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Delete or Leave List", color = MaterialTheme.colorScheme.error) },
-                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                            onClick = {
-                                menuExpanded = false
-                                onDelete()
-                            }
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Progress Indicators
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "$completedCount of $taskCount completed",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "${(progress * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
-                    color = accentColor
-                )
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            LinearProgressIndicator(
-                progress = { progress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(CircleShape),
-                color = accentColor,
-                trackColor = accentColor.copy(alpha = 0.2f),
-                strokeCap = StrokeCap.Round
-            )
-        }
-    }
-}
-
-@Composable
-fun TaskSummaryItem(
-    task: TaskItem,
-    listName: String = "",
-    listColor: String = "#6366F1",
-    onToggle: () -> Unit,
-    onEdit: () -> Unit
-) {
-    val haptic = LocalHapticFeedback.current
-    val dateFormat = remember { SimpleDateFormat("MMM d", Locale.getDefault()) }
-    val priorityColor = when (task.priority) {
-        "URGENT" -> Color(0xFFEF4444)
-        "HIGH" -> Color(0xFFF59E0B)
-        "LOW" -> Color(0xFF10B981)
-        else -> Color(0xFF6366F1)
-    }
-
-    val animatedAlpha by animateFloatAsState(
-        targetValue = if (task.isCompleted) 0.45f else 1.0f,
-        label = "task_alpha"
-    )
-
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onEdit() },
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
+            .testTag("list_card_${list.id}")
+            .clickable(onClick = onOpen)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
+                .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Checkbox(
-                checked = task.isCompleted,
-                onCheckedChange = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onToggle()
-                },
+            Box(
                 modifier = Modifier
-                    .minimumInteractiveComponentSize()
-                    .testTag("task_checkbox_${task.id}")
-            )
+                    .size(46.dp)
+                    .clip(CircleShape)
+                    .background(accent.copy(alpha = 0.16f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = iconForListKey(list.iconKey),
+                    contentDescription = list.title,
+                    tint = accent
+                )
+            }
 
-            Spacer(modifier = Modifier.width(4.dp))
+            Spacer(modifier = Modifier.width(14.dp))
 
             Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .alpha(animatedAlpha)
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Text(
-                    text = task.title,
-                    style = MaterialTheme.typography.bodyLarge.copy(
-                        fontWeight = FontWeight.Medium,
-                        textDecoration = if (task.isCompleted) TextDecoration.LineThrough else TextDecoration.None
-                    ),
-                    color = if (task.isCompleted) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f) else MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    if (listName.isNotBlank()) {
-                        Text(
-                            text = listName,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
+                    Text(
+                        text = list.title,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    if (list.isShared) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier.testTag("shared_badge_${list.id}")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Group,
+                                    contentDescription = "Shared list",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = if (memberCount > 1) "Shared ($memberCount)" else "Shared",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    } else if (list.isLocked) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Locked list",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
+                }
 
-                    if (task.dueDateEpoch > 0) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.CalendarToday, contentDescription = null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                text = dateFormat.format(Date(task.dueDateEpoch)),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                Text(
+                    text = buildString {
+                        append("$openCount active")
+                        if (doneCount > 0) append(" • $doneCount done")
+                        if (list.isReadOnly) append(" • View only")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.testTag("list_menu_${list.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "List options"
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Share") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Share, contentDescription = null)
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            onShare()
+                        },
+                        modifier = Modifier.testTag("menu_share_${list.id}")
+                    )
+                    if (!list.isReadOnly) {
+                        DropdownMenuItem(
+                            text = { Text("Edit") },
+                            leadingIcon = {
+                                Icon(Icons.Default.Edit, contentDescription = null)
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onEdit()
+                            },
+                            modifier = Modifier.testTag("menu_edit_${list.id}")
+                        )
                     }
-
-                    if (task.reminderEpoch > 0) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Alarm, contentDescription = null, modifier = Modifier.size(12.dp), tint = MaterialTheme.colorScheme.secondary)
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                text = task.reminderSound,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
-                        }
+                    if (!list.isShared) {
+                        DropdownMenuItem(
+                            text = { Text("Delete") },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onDelete()
+                            },
+                            modifier = Modifier.testTag("menu_delete_${list.id}")
+                        )
                     }
                 }
             }
-
-            // Priority dot / badge
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(priorityColor.copy(alpha = 0.2f))
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    text = task.priority,
-                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                    color = priorityColor,
-                    fontSize = 10.sp
-                )
-            }
         }
-    }
-}
-
-fun isToday(epochMs: Long): Boolean {
-    if (epochMs <= 0L) return false
-    val cal1 = Calendar.getInstance().apply { timeInMillis = epochMs }
-    val cal2 = Calendar.getInstance()
-    return cal1.get(Calendar.YEAR) == cal2.get(Calendar.YEAR) &&
-            cal1.get(Calendar.DAY_OF_YEAR) == cal2.get(Calendar.DAY_OF_YEAR)
-}
-
-fun resolveListIcon(iconKey: String): ImageVector {
-    return when (iconKey) {
-        "directions_run" -> Icons.Default.DirectionsRun
-        "home" -> Icons.Default.Home
-        "flight" -> Icons.Default.Flight
-        "shopping_cart" -> Icons.Default.ShoppingCart
-        "work" -> Icons.Default.Work
-        "favorite" -> Icons.Default.Favorite
-        "star" -> Icons.Default.Star
-        else -> Icons.Default.FormatListBulleted
     }
 }

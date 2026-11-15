@@ -1,123 +1,96 @@
 package com.example.data.drive
 
-import android.app.Activity
 import android.content.Context
 import android.content.Intent
-import android.util.Log
-import com.google.android.gms.auth.GoogleAuthException
 import com.google.android.gms.auth.GoogleAuthUtil
 import com.google.android.gms.auth.UserRecoverableAuthException
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Scope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 sealed interface DriveAuthResult {
-    data class Success(val token: String, val account: GoogleSignInAccount) : DriveAuthResult
-    data class NeedsUserConsent(val intent: Intent) : DriveAuthResult
-    data class NeedsSignIn(val signInIntent: Intent) : DriveAuthResult
-    data class Error(val message: String, val isRecoverable: Boolean = false) : DriveAuthResult
+    data class Success(val account: GoogleSignInAccount, val accessToken: String) : DriveAuthResult
+    data class NeedsConsent(val consentIntent: Intent) : DriveAuthResult
+    data class Error(val message: String) : DriveAuthResult
 }
 
-object GoogleDriveAuthHelper {
-    private const val TAG = "DriveAuthHelper"
-    const val DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
-    private const val TOKEN_SCOPE_STRING = "oauth2:https://www.googleapis.com/auth/drive"
+@Suppress("DEPRECATION")
+class GoogleDriveAuthHelper(private val context: Context) {
 
-    fun getGoogleSignInClient(context: Context): GoogleSignInClient {
-        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+    companion object {
+        const val DRIVE_SCOPE_URI = "https://www.googleapis.com/auth/drive"
+        private const val OAUTH_TOKEN_SCOPE = "oauth2:$DRIVE_SCOPE_URI"
+    }
+
+    private fun buildClient(): GoogleSignInClient {
+        val options = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
-            .requestProfile()
-            .requestScopes(Scope(DRIVE_SCOPE))
+            .requestScopes(Scope(DRIVE_SCOPE_URI))
             .build()
-        return GoogleSignIn.getClient(context, gso)
+        return GoogleSignIn.getClient(context, options)
     }
 
-    fun hasDrivePermission(context: Context): Boolean {
-        val account = GoogleSignIn.getLastSignedInAccount(context) ?: return false
-        return GoogleSignIn.hasPermissions(account, Scope(DRIVE_SCOPE))
-    }
+    fun getSignInIntent(): Intent = buildClient().signInIntent
 
-    fun getCurrentGoogleAccount(context: Context): GoogleSignInAccount? {
-        return GoogleSignIn.getLastSignedInAccount(context)
-    }
-
-    /**
-     * Extracts the signed-in Google account from the ActivityResult Intent.
-     * This saves the account into GoogleSignIn.getLastSignedInAccount(context).
-     */
-    fun handleSignInResult(intent: Intent?): GoogleSignInAccount? {
-        if (intent == null) return null
-        return try {
-            val task = GoogleSignIn.getSignedInAccountFromIntent(intent)
-            task.getResult(com.google.android.gms.common.api.ApiException::class.java)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed retrieving signed in account from intent: ${e.message}")
+    fun getConnectedAccount(): GoogleSignInAccount? {
+        val account = GoogleSignIn.getLastSignedInAccount(context) ?: return null
+        return if (GoogleSignIn.hasPermissions(account, Scope(DRIVE_SCOPE_URI))) {
+            account
+        } else {
             null
         }
     }
 
-    /**
-     * Obtains a valid OAuth token for Google Drive API v3.
-     * Must be called from a coroutine (runs on Dispatchers.IO).
-     */
-    suspend fun getAccessToken(context: Context): DriveAuthResult = withContext(Dispatchers.IO) {
-        val account = GoogleSignIn.getLastSignedInAccount(context)
-        if (account == null || account.account == null) {
-            val signInIntent = getGoogleSignInClient(context).signInIntent
-            return@withContext DriveAuthResult.NeedsSignIn(signInIntent)
-        }
+    fun isConnected(): Boolean = getConnectedAccount() != null
 
-        try {
-            val token = GoogleAuthUtil.getToken(
-                context.applicationContext,
-                account.account!!,
-                TOKEN_SCOPE_STRING
-            )
-            return@withContext DriveAuthResult.Success(token, account)
-        } catch (e: UserRecoverableAuthException) {
-            Log.w(TAG, "User consent needed for Drive scope: ${e.message}")
-            val recoveryIntent = e.intent
-            if (recoveryIntent != null) {
-                return@withContext DriveAuthResult.NeedsUserConsent(recoveryIntent)
-            } else {
-                return@withContext DriveAuthResult.NeedsSignIn(getGoogleSignInClient(context).signInIntent)
+    suspend fun getAccessToken(account: GoogleSignInAccount? = getConnectedAccount()): DriveAuthResult {
+        val target = account ?: return DriveAuthResult.NeedsConsent(getSignInIntent())
+        val androidAccount = target.account ?: return DriveAuthResult.NeedsConsent(getSignInIntent())
+        return withContext(Dispatchers.IO) {
+            try {
+                val token = GoogleAuthUtil.getToken(context, androidAccount, OAUTH_TOKEN_SCOPE)
+                DriveAuthResult.Success(target, token)
+            } catch (e: UserRecoverableAuthException) {
+                val recoverIntent = e.intent
+                if (recoverIntent != null) {
+                    DriveAuthResult.NeedsConsent(recoverIntent)
+                } else {
+                    DriveAuthResult.Error(e.localizedMessage ?: "Google Drive consent required.")
+                }
+            } catch (e: Exception) {
+                DriveAuthResult.Error(e.localizedMessage ?: "Unable to obtain Google Drive token.")
             }
-        } catch (e: GoogleAuthException) {
-            Log.e(TAG, "GoogleAuthException getting token", e)
-            return@withContext DriveAuthResult.Error(
-                message = "Authentication failed: ${e.message}. Please reconnect your Google account.",
-                isRecoverable = true
-            )
-        } catch (e: Exception) {
-            Log.e(TAG, "Exception getting Drive token", e)
-            return@withContext DriveAuthResult.Error(
-                message = e.localizedMessage ?: "Failed to connect to Google Drive",
-                isRecoverable = false
-            )
         }
     }
 
-    /**
-     * Clears cached token when Google Drive API returns 401 Unauthorized or token expires.
-     */
-    suspend fun invalidateToken(context: Context, token: String) = withContext(Dispatchers.IO) {
+    suspend fun invalidateToken(token: String) {
+        withContext(Dispatchers.IO) {
+            try {
+                GoogleAuthUtil.clearToken(context, token)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    fun handleSignInResultIntent(data: Intent?): Result<GoogleSignInAccount> {
+        return try {
+            val task = GoogleSignIn.getSignedInAccountFromIntent(data)
+            val account = task.getResult(ApiException::class.java)
+            Result.success(account)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun signOut() {
         try {
-            GoogleAuthUtil.clearToken(context.applicationContext, token)
-        } catch (e: Exception) {
-            Log.w(TAG, "Error clearing token", e)
-        }
-    }
-
-    /**
-     * Signs out of Google Drive client.
-     */
-    fun signOut(context: Context, onComplete: () -> Unit = {}) {
-        getGoogleSignInClient(context).signOut().addOnCompleteListener {
-            onComplete()
+            buildClient().signOut()
+        } catch (_: Exception) {
         }
     }
 }

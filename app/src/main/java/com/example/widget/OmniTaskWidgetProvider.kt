@@ -38,7 +38,6 @@ class OmniTaskWidgetProvider : AppWidgetProvider() {
                     updateAppWidget(context, appWidgetManager, widgetId, tasks)
                 }
             } catch (_: Exception) {
-                // Ignore widget update failures when widgets aren't placed or OS service is busy
             }
         }
 
@@ -50,11 +49,9 @@ class OmniTaskWidgetProvider : AppWidgetProvider() {
         ) {
             val views = RemoteViews(context.packageName, R.layout.widget_omni_task)
 
-            // 1. Today's Date
             val todayStr = SimpleDateFormat("EEEE, MMM d", Locale.getDefault()).format(Date())
             views.setTextViewText(R.id.widget_today_date, todayStr)
 
-            // 2. Open Main Lists Button
             val openListsIntent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             }
@@ -67,7 +64,6 @@ class OmniTaskWidgetProvider : AppWidgetProvider() {
             views.setOnClickPendingIntent(R.id.widget_btn_main_lists, openListsPendingIntent)
             views.setOnClickPendingIntent(R.id.widget_root, openListsPendingIntent)
 
-            // 3. Filter for due today and active tasks
             val calendar = Calendar.getInstance().apply {
                 set(Calendar.HOUR_OF_DAY, 23)
                 set(Calendar.MINUTE, 59)
@@ -76,15 +72,13 @@ class OmniTaskWidgetProvider : AppWidgetProvider() {
             }
             val endOfTodayMillis = calendar.timeInMillis
 
-            // Tasks due today or urgent uncompleted tasks
             val dueTodayTasks = allTasks.filter { task ->
                 !task.isCompleted && (
-                        task.dueDateEpoch in 1..endOfTodayMillis ||
-                                task.priority == "URGENT" ||
-                                (task.dueDateEpoch == 0L && task.priority == "HIGH")
-                        )
+                    task.dueDateEpoch in 1..endOfTodayMillis ||
+                        task.priority == "URGENT" ||
+                        (task.dueDateEpoch == 0L && task.priority == "HIGH")
+                    )
             }.sortedWith(
-                // Sorted strictly by Urgency Status first
                 compareByDescending<TaskItem> {
                     when (it.priority) {
                         "URGENT" -> 4
@@ -101,7 +95,6 @@ class OmniTaskWidgetProvider : AppWidgetProvider() {
                 if (countDue == 0) "All caught up • Tap Main Lists" else "$countDue due today • Ranked by Urgency"
             )
 
-            // Row IDs
             val rowIds = listOf(R.id.widget_row_1, R.id.widget_row_2, R.id.widget_row_3, R.id.widget_row_4)
             val checkIds = listOf(R.id.widget_check_1, R.id.widget_check_2, R.id.widget_check_3, R.id.widget_check_4)
             val titleIds = listOf(R.id.widget_title_1, R.id.widget_title_2, R.id.widget_title_3, R.id.widget_title_4)
@@ -122,14 +115,12 @@ class OmniTaskWidgetProvider : AppWidgetProvider() {
                         views.setTextViewText(titleIds[i], task.title)
                         views.setTextViewText(priorityIds[i], task.priority)
 
-                        // Set priority badge background drawable
                         when (task.priority) {
                             "URGENT" -> views.setInt(priorityIds[i], "setBackgroundResource", R.drawable.widget_tag_urgent)
                             "HIGH" -> views.setInt(priorityIds[i], "setBackgroundResource", R.drawable.widget_tag_high)
                             else -> views.setInt(priorityIds[i], "setBackgroundResource", R.drawable.widget_tag_medium)
                         }
 
-                        // Checkbox to mark as completed (disappears from widget on tap)
                         val completeIntent = Intent(context, OmniTaskWidgetProvider::class.java).apply {
                             action = ACTION_COMPLETE_TASK
                             putExtra(EXTRA_TASK_ID, task.id)
@@ -170,7 +161,6 @@ class OmniTaskWidgetProvider : AppWidgetProvider() {
                 try {
                     val repo = TodoRepository.create(context)
                     repo.markTaskCompletedById(taskId)
-                    // Remove from cached tasks and update immediately
                     val updatedList = cachedTasks.filter { it.id != taskId }
                     cachedTasks = updatedList
                     updateAllWidgets(context, updatedList)

@@ -1,43 +1,38 @@
 package com.example.ui.voice
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.speech.RecognizerIntent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,14 +40,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.example.ai.ParsedTaskResult
-import com.example.data.model.TaskItem
-import com.example.data.model.TodoList
 import com.example.ui.viewmodel.NlpUiState
 import java.util.Locale
 
@@ -60,325 +53,189 @@ import java.util.Locale
 @Composable
 fun VoiceNlpSheet(
     nlpState: NlpUiState,
-    availableLists: List<TodoList>,
+    targetListTitle: String,
     onParseInput: (String) -> Unit,
-    onSaveParsedTask: (TaskItem, String) -> Unit,
+    onAddParsedTask: (ParsedTaskResult) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var textInput by remember { mutableStateOf("") }
+    val context = LocalContext.current
+    var rawText by remember { mutableStateOf("") }
+    var micNotice by remember { mutableStateOf<String?>(null) }
 
-    // Speech to text activity result launcher
     val speechLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
-            val spokenText = result.data
+            val spoken = result.data
                 ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
                 ?.firstOrNull()
-            if (!spokenText.isNullOrBlank()) {
-                textInput = spokenText
-                onParseInput(spokenText)
+                .orEmpty()
+            if (spoken.isNotBlank()) {
+                rawText = spoken
+                onParseInput(spoken)
             }
         }
     }
 
-    val examplePrompts = listOf(
-        "Clean the kitchen and organize cabinets for El sha2a",
-        "Buy milk and fresh fruit tomorrow at 5pm",
-        "Pack passport and foreign currency for travel list",
-        "Dry cleaning and pharmacy on the go high priority"
-    )
+    val launchSpeech = {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak a task (e.g. Buy milk tomorrow urgent)")
+        }
+        try {
+            speechLauncher.launch(intent)
+        } catch (_: Exception) {
+            micNotice = "Speech recognizer unavailable on this device. Type your task below instead."
+        }
+    }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState
-    ) {
+    val micPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            micNotice = null
+            launchSpeech()
+        } else {
+            micNotice = "Microphone permission denied. Type your task below instead."
+        }
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 24.dp)
-                .padding(bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primaryContainer),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column {
-                        Text(
-                            text = "AI Voice & Natural Task Creator",
-                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                        )
-                        Text(
-                            text = "Speak or type in your own words",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close")
-                }
-            }
-
-            // Input Row with Mic button and Send button
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                OutlinedTextField(
-                    value = textInput,
-                    onValueChange = { textInput = it },
-                    placeholder = { Text("Say or type what you need to do...") },
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("nlp_text_input"),
-                    shape = RoundedCornerShape(14.dp),
-                    maxLines = 3
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-
-                // Microphone voice trigger
-                IconButton(
-                    onClick = {
-                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                            putExtra(
-                                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-                            )
-                            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-                            putExtra(RecognizerIntent.EXTRA_PROMPT, "Tell P Task what you want to do...")
-                        }
-                        try {
-                            speechLauncher.launch(intent)
-                        } catch (_: Exception) {
-                        }
-                    },
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primaryContainer)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Mic,
-                        contentDescription = "Voice Input",
-                        tint = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(4.dp))
-
-                // Submit parse
-                IconButton(
-                    onClick = {
-                        if (textInput.isNotBlank()) {
-                            onParseInput(textInput)
-                        }
-                    },
-                    enabled = textInput.isNotBlank(),
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (textInput.isNotBlank()) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.surfaceVariant
-                        )
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Send,
-                        contentDescription = "Submit",
-                        tint = if (textInput.isNotBlank()) MaterialTheme.colorScheme.onPrimary
-                        else MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            // Quick Example Chips
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = "Try saying or tapping:",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    text = "Quick AI Capture → $targetListTitle",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                 )
-                examplePrompts.forEach { prompt ->
-                    Text(
-                        text = "• \"$prompt\"",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                textInput = prompt
-                                onParseInput(prompt)
-                            }
-                            .padding(vertical = 2.dp)
-                    )
-                }
             }
 
-            // Results Card
-            AnimatedVisibility(visible = nlpState is NlpUiState.Loading) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text(
-                        text = "Gemini is understanding your task...",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            }
-
-            AnimatedVisibility(visible = nlpState is NlpUiState.Error) {
-                val error = (nlpState as NlpUiState.Error).message
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = error,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.padding(12.dp),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                }
-            }
-
-            AnimatedVisibility(visible = nlpState is NlpUiState.Success) {
-                val parsed = (nlpState as NlpUiState.Success).parsed
-                ParsedTaskPreviewCard(
-                    parsed = parsed,
-                    availableLists = availableLists,
-                    onConfirm = { taskItem, listTitle ->
-                        onSaveParsedTask(taskItem, listTitle)
-                        onDismiss()
+            OutlinedTextField(
+                value = rawText,
+                onValueChange = { rawText = it },
+                label = { Text("Speak or type naturally") },
+                placeholder = { Text("e.g., Pay electric bill tomorrow high priority") },
+                trailingIcon = {
+                    Row {
+                        IconButton(
+                            onClick = {
+                                val hasMic = ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (hasMic) {
+                                    launchSpeech()
+                                } else {
+                                    micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            },
+                            modifier = Modifier.testTag("voice_mic_button")
+                        ) {
+                            Icon(Icons.Default.Mic, contentDescription = "Voice input")
+                        }
+                        IconButton(
+                            onClick = { onParseInput(rawText) },
+                            enabled = rawText.isNotBlank() && nlpState !is NlpUiState.Parsing,
+                            modifier = Modifier.testTag("voice_parse_button")
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Parse task")
+                        }
                     }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ParsedTaskPreviewCard(
-    parsed: ParsedTaskResult,
-    availableLists: List<TodoList>,
-    onConfirm: (TaskItem, String) -> Unit
-) {
-    // Match target list or fallback to first list
-    val targetList = availableLists.find {
-        it.title.contains(parsed.targetList, ignoreCase = true) ||
-                parsed.targetList.contains(it.title, ignoreCase = true)
-    } ?: availableLists.firstOrNull()
-
-    val targetListTitle = targetList?.title ?: "Personal Todo daily"
-    val targetListId = targetList?.id ?: ""
-
-    val calculatedDueDate = if (parsed.dueDateOffsetHours > 0) {
-        System.currentTimeMillis() + (parsed.dueDateOffsetHours * 3600000L)
-    } else 0L
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
-        ),
-        shape = RoundedCornerShape(16.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = "AI Extracted Task",
-                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
-                    color = MaterialTheme.colorScheme.primary
-                )
-                FilterChip(
-                    selected = true,
-                    onClick = {},
-                    label = { Text(parsed.priority) }
-                )
-            }
-
-            Text(
-                text = parsed.title,
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("voice_text_input")
             )
 
-            if (parsed.notes.isNotBlank()) {
+            if (!micNotice.isNullOrBlank()) {
                 Text(
-                    text = "Notes: ${parsed.notes}",
+                    text = micNotice!!,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text(
-                    text = "List: $targetListTitle",
-                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
-                    color = MaterialTheme.colorScheme.secondary
-                )
-                if (parsed.dueDateOffsetHours > 0) {
+            when (nlpState) {
+                NlpUiState.Idle -> {
                     Text(
-                        text = "Due: in ~${parsed.dueDateOffsetHours}h",
+                        text = "Gemini extracts task title, priority, category, and due date automatically.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Button(
-                onClick = {
-                    val task = TaskItem(
-                        listId = targetListId,
-                        title = parsed.title,
-                        notes = parsed.notes,
-                        priority = parsed.priority,
-                        dueDateEpoch = calculatedDueDate,
-                        reminderEpoch = if (calculatedDueDate > 0) calculatedDueDate - 3600000L else 0L,
-                        category = parsed.category
+                NlpUiState.Parsing -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        Text("Understanding your task...", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                is NlpUiState.Error -> {
+                    Text(
+                        text = nlpState.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
                     )
-                    onConfirm(task, targetListTitle)
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("confirm_ai_task_button"),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text("Confirm & Add to $targetListTitle")
+                }
+                is NlpUiState.Ready -> {
+                    val parsed = nlpState.parsed
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = parsed.title,
+                                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                            Text(
+                                text = "Priority: ${parsed.priority} • Category: ${parsed.category}" +
+                                    (parsed.dueOffsetDays?.let { " • Due in $it day(s)" } ?: ""),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            if (parsed.notes.isNotBlank()) {
+                                Text(
+                                    text = parsed.notes,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Button(
+                                    onClick = { onAddParsedTask(parsed) },
+                                    modifier = Modifier.testTag("add_parsed_task_button")
+                                ) {
+                                    Text("Add Task")
+                                }
+                                OutlinedButton(onClick = onDismiss) {
+                                    Text("Close")
+                                }
+                            }
+                        }
+                    }
+                }
             }
+            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }
